@@ -1,0 +1,173 @@
+[
+  {
+    "id": "net-001",
+    "topic": "TCP三次握手",
+    "question": "请详细说明TCP三次握手的过程，以及为什么需要三次而不是两次？",
+    "standard_answer": "三次握手：1. 客户端发送SYN（seq=x）进入SYN_SENT；2. 服务端回复SYN+ACK（seq=y, ack=x+1）进入SYN_RCVD；3. 客户端发送ACK（seq=x+1, ack=y+1）进入ESTABLISHED，服务端收到后也进入ESTABLISHED。需要三次而不是两次的原因：防止已失效的连接请求到达服务器。如果客户端第一个SYN在网络中延迟，客户端重发SYN完成连接后释放，此时旧SYN到达服务器，两次握手会直接建立连接浪费资源（服务器处于ESTABLISHED等待数据），三次握手时服务器回复SYN+ACK等待客户端ACK，客户端不会回复旧SYN的ACK，连接不会建立。",
+    "user_answer": "客户端发SYN，服务端回SYN+ACK，客户端再回ACK。三次是为了防止旧的连接请求造成错误，两次的话旧的SYN可能让服务器误以为要建立连接。",
+    "expected_score": 80,
+    "expected_comment": "流程和原因正确，但缺失各状态名称（SYN_SENT等）和序列号变化细节"
+  },
+  {
+    "id": "net-002",
+    "topic": "TCP四次挥手",
+    "question": "请说明TCP四次挥手的过程，以及TIME_WAIT状态的作用和为什么要等待2MSL？",
+    "standard_answer": "四次挥手：1. 主动方发FIN（seq=u）进入FIN_WAIT_1；2. 被动方回ACK（seq=v, ack=u+1）进入CLOSE_WAIT，主动方收到进入FIN_WAIT_2；3. 被动方发FIN进入LAST_ACK；4. 主动方回ACK（seq=u+1, ack=w+1）进入TIME_WAIT，被动方收到进入CLOSED。2MSL等待原因：1. 保证最后一个ACK能到达被动方（若ACK丢失，被动方重发FIN，主动方能再回ACK）；2. 使本次连接的所有报文在网络中消失，避免干扰后续使用相同端口的新连接。",
+    "user_answer": "主动方发FIN，对方回ACK，然后对方也发FIN，最后回ACK。TIME_WAIT是为了确保最后一个ACK能到，防止重发的FIN被忽略，大概等2MSL。",
+    "expected_score": 67,
+    "expected_comment": "流程基本正确但状态描述不完整（缺少CLOSE_WAIT、FIN_WAIT_2等），2MSL的两个作用只说明了第一个"
+  },
+  {
+    "id": "net-003",
+    "topic": "TCP vs UDP",
+    "question": "请对比TCP和UDP的区别，以及各自适用的场景。",
+    "standard_answer": "TCP面向连接（三次握手）、可靠（序列号+ACK+超时重传）、有序、流量控制（滑动窗口）、拥塞控制（慢启动、拥塞避免、快重传快恢复）、全双工、面向字节流。UDP无连接、不可靠（丢包不重传）、无序、无流量/拥塞控制、面向报文。TCP场景：HTTP/HTTPS（网页）、FTP文件传输、SMTP邮件、SSH远程登录。UDP场景：DNS查询（快）、音视频通话（可容忍丢包但需要低延迟）、在线游戏、DHCP、QUIC（基于UDP但自己实现可靠传输）。",
+    "user_answer": "TCP可靠、有连接、有序，UDP不可靠、无连接、无序。TCP有流量控制和拥塞控制，UDP没有。TCP适合网页、文件传输，UDP适合视频通话、DNS。",
+    "expected_score": 83,
+    "expected_comment": "对比完整清晰，场景举例合适，回答质量高"
+  },
+  {
+    "id": "net-004",
+    "topic": "HTTP请求方法",
+    "question": "请说明HTTP的GET和POST请求的区别，以及RESTful API中PUT和PATCH的区别。",
+    "standard_answer": "GET：幂等、安全（不会修改资源）、参数在URL中、可缓存、长度受限。POST：非幂等、非安全、参数在body中、不可缓存或需特殊处理。本质区别：GET获取资源，POST创建资源/提交数据。PUT：完整替换资源，幂等（发一次和发N次结果一样），需提供完整资源对象。PATCH：部分更新资源，非幂等（增量修改），只提供需更新的字段。RESTful实践中PUT用于更新整个资源，PATCH用于局部更新。",
+    "user_answer": "GET是获取数据，参数在URL。POST是提交数据，参数在body。PUT是全量更新，幂等的。PATCH是部分更新，不一定幂等。",
+    "expected_score": 76,
+    "expected_comment": "核心区分正确，但未提及缓存差异和RESTful语义完整性"
+  },
+  {
+    "id": "net-005",
+    "topic": "HTTPS",
+    "question": "请解释HTTPS的握手过程（TLS 1.2），以及它如何保证传输安全。",
+    "standard_answer": "TLS 1.2握手：1. Client Hello（发送支持的TLS版本、加密套件列表、随机数random_c）；2. Server Hello（选定版本和加密套件、发服务器随机数random_s、证书）；3. 客户端验证证书（CA链验证），生成预主密钥pre-master用证书公钥加密发送；4. 服务端用私钥解密获得pre-master；5. 双方通过random_c+random_s+pre-master计算出会话密钥（对称密钥）；6. 发送Finished消息（加密的握手摘要）验证。之后用会话密钥对称加密通信。安全：身份验证（证书）、密钥协商（非对称加密传对称密钥）、数据加密（对称加密）、完整性校验（MAC）。",
+    "user_answer": "HTTPS就是HTTP加了一层TLS。客户端发hello带随机数和加密套件，服务端回证书和随机数。客户端验证证书然后生成一个密钥用公钥加密发给服务器。之后用对称加密通信。",
+    "expected_score": 56,
+    "expected_comment": "握手流程略懂但过于简略，缺少pre-master、会话密钥推导和Finished验证说明"
+  },
+  {
+    "id": "net-006",
+    "topic": "DNS解析",
+    "question": "请说明在浏览器输入www.example.com后，DNS解析的完整过程。",
+    "standard_answer": "1. 浏览器检查自身DNS缓存；2. 调用系统库（gethostbyname），检查操作系统DNS缓存（hosts文件）；3. 向本地DNS服务器（LDNS，通常是ISP或如8.8.8.8）发起递归查询；4. LDNS向根DNS服务器查询（返回.com顶级域服务器地址）；5. LDNS向.com TLD服务器查询（返回example.com权威服务器地址）；6. LDNS向example.com权威服务器查询（返回IP地址）；7. LDNS缓存结果并返回给客户端；8. 浏览器收到IP发起TCP连接。整个过程中存在多级缓存（浏览器→OS→LDNS）加速查询。",
+    "user_answer": "先查浏览器缓存，再查系统缓存和hosts文件，然后问本地DNS服务器，本地DNS递归去查，从根服务器到顶级域再到权威服务器，最后拿到IP。",
+    "expected_score": 79,
+    "expected_comment": "完整性和顺序基本正确，递归/迭代查询的区分可更明确"
+  },
+  {
+    "id": "net-007",
+    "topic": "TCP拥塞控制",
+    "question": "请说明TCP拥塞控制的四个核心算法：慢启动、拥塞避免、快重传、快恢复。",
+    "standard_answer": "1. 慢启动：连接建立时cwnd从1开始，每收到一个ACK cwnd翻倍（指数增长），直到ssthresh（慢启动阈值）。2. 拥塞避免：cwnd达到ssthresh后线性增长（每个RTT加1），避免过快消耗网络资源。3. 快重传：收到3个冗余ACK时不等超时就重传丢失报文段。4. 快恢复：快重传后，cwnd减半+3，进入拥塞避免而非慢启动（避免吞吐量剧降）。TCP Reno是经典的四个算法组合。后续改进包括TCP CUBIC等。",
+    "user_answer": "慢启动是连接后指数增长，到阈值变成线性增长。收到3个重复ACK就快重传，然后快恢复把cwnd减半继续线性增长而不是回到慢启动。",
+    "expected_score": 72,
+    "expected_comment": "四算法基本覆盖，但ssthresh和cwnd具体变化数值描述不够精确"
+  },
+  {
+    "id": "net-008",
+    "topic": "HTTP状态码",
+    "question": "请列举HTTP常见的状态码分类，并举例说明1xx、2xx、3xx、4xx、5xx各有哪些典型状态码？",
+    "standard_answer": "1xx信息：100 Continue（继续发送body）、101 Switching Protocols（WebSocket升级）。2xx成功：200 OK、201 Created（POST创建资源后返回）、204 No Content（删除成功无响应体）。3xx重定向：301永久重定向（下次用新URL）、302临时重定向（还用旧URL）、304 Not Modified（缓存有效）。4xx客户端错误：400 Bad Request、401 Unauthorized（未登录）、403 Forbidden（无权限）、404 Not Found、405 Method Not Allowed、429 Too Many Requests（限流）。5xx服务端错误：500 Internal Server Error、502 Bad Gateway（网关到上游失败）、503 Service Unavailable（临时过载/维护）、504 Gateway Timeout。",
+    "user_answer": "2xx成功：200 OK。3xx重定向：301永久、302临时、304缓存。4xx客户端错误：400、401、403、404。5xx服务端错误：500、502、503。",
+    "expected_score": 74,
+    "expected_comment": "主要状态码覆盖全面，但1xx分类缺失，5xx中504未提及"
+  },
+  {
+    "id": "net-009",
+    "topic": "TCP滑动窗口",
+    "question": "请解释TCP滑动窗口机制的原理，以及流量控制是如何实现的？",
+    "standard_answer": "滑动窗口让发送方可以在收到ACK前连续发送多个数据段，提高吞吐量。窗口大小由接收方通告（rwnd=接收缓冲区剩余空间），发送方未确认数据量不能超过rwnd。流量控制：接收方在TCP首部window字段告知自己的可用缓冲区大小，发送方据此调整。如果rwnd=0发送方停止发送并启动持续计时器（persist timer），定期发送零窗口探测报文，避免死锁。滑动窗口也实现了累积确认（收到ack=n表示n之前的所有数据都已收到）。",
+    "user_answer": "滑动窗口允许发送方连续发多个包不用等ACK，提高效率。接收方通过窗口大小告诉发送方自己能收多少，发送方不能超过这个值。接收方缓冲区满了就让发送方等一等。",
+    "expected_score": 69,
+    "expected_comment": "基本原理解释正确，但缺少零窗口探测、持续计时器和累积确认的细节"
+  },
+  {
+    "id": "net-010",
+    "topic": "HTTP/1.1 vs HTTP/2",
+    "question": "请对比HTTP/1.1和HTTP/2的主要区别，以及HTTP/2解决了什么问题？",
+    "standard_answer": "HTTP/1.1问题：队头阻塞（HOL blocking）——同一连接上多个请求必须按顺序响应，前一个慢了后面都等。HTTP/2改进：1. 多路复用（Multiplexing）——一个连接上同时传输多个流，解决了队头阻塞；2. 二进制分帧——将HTTP头和数据切分成帧，更高效；3. 头部压缩（HPACK）——用静态/动态字典压缩重复头字段，减少传输量；4. 服务器推送（Server Push）——服务器主动推送客户端需要的资源。但HTTP/2的TCP层仍存在队头阻塞（TCP丢包影响所有流），因此QUIC（HTTP/3）基于UDP解决这个问题。",
+    "user_answer": "HTTP/2有多路复用可以同时发多个请求，不会像1.1那样一个请求卡住后面的。还有头部压缩和服务器推送。HTTP/2解决了队头阻塞问题。",
+    "expected_score": 58,
+    "expected_comment": "多路复用和头部压缩说对了，但遗漏了二进制分帧，且'解决了队头阻塞'表述不准确（只解决了HTTP层的，TCP层的还在）"
+  },
+  {
+    "id": "net-011",
+    "topic": "TCP粘包",
+    "question": "什么是TCP粘包问题？它的原因是什么？如何解决？",
+    "standard_answer": "TCP是面向字节流的，没有消息边界。粘包指多个发送包被合并成一个接收。原因：发送方Nagle算法将小包合并；接收方read不及时，多个包堆积在缓冲区一次读取。解决方式：应用层定义消息边界——1. 定长消息（每个包固定长度，不够填充）；2. 长度前缀（每个包前4字节存长度，先读长度再读内容）；3. 特殊分隔符（如HTTP的\\r\\n\\r\\n，但需转义）；4. 自描述协议（如Protobuf内带长度）。UDP是面向报文的，天然有消息边界，无粘包问题。",
+    "user_answer": "TCP粘包就是多个包黏在一起了，因为TCP是流式协议没有边界。解决方式可以用固定长度，或者包头加长度字段，或者用特殊分隔符。",
+    "expected_score": 65,
+    "expected_comment": "概念和解决方法正确，但未分析Nagle算法等具体原因，UDP的对比也没有提到"
+  },
+  {
+    "id": "net-012",
+    "topic": "OSI七层模型",
+    "question": "请画出OSI七层模型，并说明各层的作用。TCP/IP四层模型如何对应？",
+    "standard_answer": "OSI七层：物理层（比特流传输，网线接口）、数据链路层（帧传输和MAC寻址，交换机）、网络层（路由和IP寻址，路由器/IP协议）、传输层（端到端连接，TCP/UDP）、会话层（建立/管理会话）、表示层（数据加密压缩编码）、应用层（HTTP/FTP/DNS等）。TCP/IP四层模型对应：应用层（对应OSI应用+表示+会话）、传输层（对应传输层）、网络层/网际层（对应网络层）、网络接口层（对应数据链路+物理层）。",
+    "user_answer": "OSI七层：物理层、数据链路层、网络层、传输层、会话层、表示层、应用层。TCP/IP四层：应用层、传输层、网络层、网络接口层。主要对应关系是TCP/IP的应用层包含OSI的上三层。",
+    "expected_score": 85,
+    "expected_comment": "层次记忆和对应关系准确，各层核心设备也可以提一下"
+  },
+  {
+    "id": "net-013",
+    "topic": "ARP协议",
+    "question": "请解释ARP协议的作用和工作原理。什么是ARP欺骗攻击？",
+    "standard_answer": "ARP（地址解析协议）将IP地址映射为MAC地址。原理：主机在局域网内广播ARP请求（'谁的IP是192.168.1.1？'），目标IP的主机回复ARP响应（'我是，我的MAC是xx:xx:xx:xx:xx:xx'），请求方将映射写入ARP缓存。ARP欺骗：攻击者发送伪造的ARP响应，声称自己是网关IP对应的MAC，局域网内其他主机的流量就会发到攻击者主机，实现中间人攻击（可窃听、篡改数据）。防御：静态ARP表、DHCP Snooping、动态ARP检测（DAI）。",
+    "user_answer": "ARP是把IP转成MAC地址的协议。先广播问谁有某个IP，对应的机器回复自己的MAC。ARP欺骗就是伪造ARP回复让流量走到攻击者那里。",
+    "expected_score": 66,
+    "expected_comment": "协议原理和攻击形式基本正确，但缺少ARP缓存机制和防御措施的说明"
+  },
+  {
+    "id": "net-014",
+    "topic": "HTTP缓存",
+    "question": "请说明HTTP缓存机制，包括强缓存和协商缓存的区别，以及相关的HTTP头字段。",
+    "standard_answer": "强缓存：不向服务器请求，直接从本地缓存读取。相关头：Expires（绝对过期时间，HTTP/1.0，依赖客户端时间可能不准）、Cache-Control（max-age=N相对时间，HTTP/1.1，优先级更高，还有no-cache/no-store等指令）。协商缓存：向服务器验证缓存是否有效，有效则返回304 Not Modified。相关头：Last-Modified/If-Modified-Since（基于最后修改时间，精度到秒）、ETag/If-None-Match（基于内容哈希，更精确）。优先级：先检查强缓存，命中则直接用；不命中再走协商缓存。",
+    "user_answer": "强缓存直接从本地拿不用问服务器，通过Cache-Control的max-age控制过期时间。协商缓存要问服务器，服务器说没改就返回304。ETag是哈希对比，Last-Modified是时间对比。",
+    "expected_score": 82,
+    "expected_comment": "区分清晰，字段覆盖完整，强缓存检查优先级关系正确"
+  },
+  {
+    "id": "net-015",
+    "topic": "WebSocket",
+    "question": "请解释WebSocket协议的原理，以及它与HTTP的关系。为什么WebSocket能实现全双工通信？",
+    "standard_answer": "WebSocket在HTTP基础上通过Upgrade握手（101 Switching Protocols）从HTTP协议升级到WebSocket协议。握手后连接保持不断，从HTTP的半双工（请求-响应模式）变成全双工（双方可随时发送数据）。WebSocket数据帧很轻量（最小2字节开销），而HTTP每次请求都带完整头部。WebSocket适用于实时性场景：在线聊天、实时通知、协作编辑、股票行情、游戏。相比轮询/长轮询，WebSocket延迟更低、开销更小。",
+    "user_answer": "WebSocket通过HTTP升级到ws协议，然后变成全双工通信。服务器可以主动给客户端发消息，不像HTTP必须客户端请求才能响应。适合实时通信。",
+    "expected_score": 73,
+    "expected_comment": "核心概念正确，但缺少握手细节（Upgrade头、101状态码）、帧格式和大数据帧分片说明"
+  },
+  {
+    "id": "net-016",
+    "topic": "负载均衡",
+    "question": "请解释常见的负载均衡算法有哪些？四层负载均衡和七层负载均衡有什么区别？",
+    "standard_answer": "常见算法：轮询（RR，依次分配）、加权轮询（WRR，按权重分配）、最少连接（LC，分配给连接数最少的服务器）、IP哈希（IP_hash，同一客户端始终到同一服务器，解决session问题）、一致性哈希（环结构，减少节点增减时的影响）。四层负载均衡（如LVS）：工作于传输层，根据IP+端口转发，不解析应用层内容，性能高、吞吐大。七层负载均衡（如Nginx）：工作于应用层，可解析HTTP头、URL、Cookie做精细化路由，功能强但性能低于四层。",
+    "user_answer": "负载均衡算法有轮询、加权轮询、最少连接、IP哈希等。四层看IP和端口转发，七层能解析HTTP内容。四层性能高，七层功能强。",
+    "expected_score": 69,
+    "expected_comment": "算法和分层区别正确，但一致性哈希未提及，四层（LVS）和七层（Nginx）举例说明不够"
+  },
+  {
+    "id": "net-017",
+    "topic": "TCP超时重传",
+    "question": "请解释TCP超时重传机制，RTO（超时重传时间）是如何计算的？",
+    "standard_answer": "TCP发送数据后启动定时器，若超时未收到ACK则重传该报文段。RTO计算基于RTT（往返时间）的采样：SRTT（平滑RTT）= α × SRTT + (1-α) × RTT_sample；RTTVAR（RTT方差）= β × RTTVAR + (1-β) × |SRTT - RTT_sample|；RTO = SRTT + 4 × RTTVAR。初始RTO通常为1秒，有下限（通常200ms）和上限（通常60秒）。超时重传后采用指数退避（RTO翻倍），直到收到ACK才重置。Karn算法：重传报文的RTT样本不参与计算，避免歧义。",
+    "user_answer": "TCP超时了没收到ACK就重传。RTO根据RTT算出来的，大概是RTT加上一些余量。超时了RTO会翻倍，叫指数退避。",
+    "expected_score": 45,
+    "expected_comment": "概念正确但缺少计算公式细节，SRTT/RTTVAR/Karn算法均未提及，回答太粗略"
+  },
+  {
+    "id": "net-018",
+    "topic": "HTTP/1.0 vs HTTP/1.1",
+    "question": "请对比HTTP/1.0和HTTP/1.1的主要区别，特别是连接管理方面的改进。",
+    "standard_answer": "HTTP/1.0 默认短连接（每次请求都新建TCP连接，请求完关闭），需添加Connection: keep-alive才能复用连接。HTTP/1.1 默认长连接（Connection: keep-alive成为默认行为），减少TCP握手开销。其他改进：1. 管道化（Pipelining）——同一连接上可以连续发多个请求，不用等前一个响应（但实际有队头阻塞问题，浏览器多默认关闭）；2. Host头字段——HTTP/1.1强制携带Host，支持一台服务器托管多个域名（虚拟主机）；3. 新增缓存控制（Cache-Control、ETag等）；4. 新增状态码（如100 Continue、206 Partial Content支持断点续传）；5. OPTIONS方法支持CORS预检。",
+    "user_answer": "HTTP/1.0是短连接，每次都要建连接。HTTP/1.1默认长连接，可以复用TCP连接，减少了握手开销。还加了Host头支持虚拟主机。",
+    "expected_score": 68,
+    "expected_comment": "核心改进说对了但不够全面，管道化和缓存控制的改进没有提到"
+  },
+  {
+    "id": "net-019",
+    "topic": "CDN",
+    "question": "请解释CDN的工作原理，以及它如何加速网站访问？",
+    "standard_answer": "CDN（内容分发网络）在全球部署边缘节点，缓存静态资源（图片、CSS、JS、视频等）。用户请求时，DNS解析返回离用户最近的CDN节点IP，用户从该节点获取资源。CDN加速原理：1. 缩短网络距离——用户从边缘节点获取而非源站；2. 多节点负载均衡——分散源站压力；3. 缓存命中——重复请求直接从边缘节点返回（无需回源）；4. 网络优化——CDN节点之间有优化的专线网络。回源策略：CDN节点未命中缓存时向源站拉取，并缓存到本地供后续使用。动态加速：部分CDN也提供动态资源加速（通过优化的路由和TCP参数减少延迟）。",
+    "user_answer": "CDN就是把内容缓存在离用户近的节点上，用户从最近的节点拿数据而不是直接连服务器，速度更快。原理就是内容分发到边缘节点。",
+    "expected_score": 50,
+    "expected_comment": "基本概念正确但过于简略，缺少DNS调度、缓存命中率和回源策略等关键机制"
+  }
+]

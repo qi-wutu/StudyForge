@@ -1,0 +1,164 @@
+[
+  {
+    "id": "db-001",
+    "topic": "事务ACID",
+    "question": "请解释数据库事务的ACID四个特性，以及MySQL的InnoDB如何实现这些特性？",
+    "standard_answer": "原子性（A）：事务要么全部执行要么全部回滚，InnoDB通过undo log实现——回滚时根据undo log撤销已执行的操作。一致性（C）：事务前后数据满足约束，是AID的结果。隔离性（I）：并发事务互不干扰，通过MVCC（多版本并发控制）和锁机制实现（四种隔离级别）。持久性（D）：事务提交后数据不丢失，InnoDB通过redo log实现——提交时先写redo log（WAL，Write-Ahead Logging），再写磁盘。redo log是物理日志，记录页的修改；binlog是逻辑日志，用于主从复制。",
+    "user_answer": "ACID是原子性、一致性、隔离性、持久性。原子性通过undo log实现回滚，持久性通过redo log保证不丢数据，隔离性通过MVCC和锁实现。",
+    "expected_score": 72,
+    "expected_comment": "AID实现机制正确，但一致性作为AID的结果和binlog与redo log的区分未说明"
+  },
+  {
+    "id": "db-002",
+    "topic": "MySQL索引",
+    "question": "请解释MySQL InnoDB的聚簇索引和非聚簇索引的区别，以及为什么建议使用自增主键？",
+    "standard_answer": "聚簇索引：数据行物理存储在索引的叶子节点上，InnoDB表必须有聚簇索引（主键或唯一键或6字节隐含rowid）。非聚簇索引（二级索引）：叶子节点存的是主键值，不是数据行本身。聚簇索引查找快（直接拿数据），非聚簇索引需回表查主键再查数据（索引覆盖除外）。自增主键好处：插入时新数据直接追加到B+树最后，无需移动数据页，减少页分裂；非自增主键（如UUID）插入时需要大量调整B+树结构（随机插入+页分裂），导致性能下降和碎片。",
+    "user_answer": "聚簇索引和数据存在一起，非聚簇索引存的是主键值需要回表。自增主键好是因为插入是追加的，不会频繁触发页分裂。UUID做主键插入很慢。",
+    "expected_score": 78,
+    "expected_comment": "核心概念清晰，自增主键优势解释到位，覆盖回表查询理解了"
+  },
+  {
+    "id": "db-003",
+    "topic": "MySQL隔离级别",
+    "question": "请说明MySQL InnoDB的四种事务隔离级别，以及它们分别解决什么问题（脏读、不可重复读、幻读）。",
+    "standard_answer": "四种隔离级别（从低到高）：1. 读未提交（READ UNCOMMITTED）：可能发生脏读（读到其他事务未提交的数据）；2. 读已提交（READ COMMITTED）：解决脏读，但不可重复读（同一事务两次读同一行结果不同，因其他事务提交了修改）；3. 可重复读（REPEATABLE READ）：解决脏读和不可重复读，但可能幻读（同一事务两次范围查询结果不同，因其他事务插入了新行），MySQL的InnoDB通过间隙锁（Gap Lock）+MVCC在此级别下解决了幻读；4. 串行化（SERIALIZABLE）：全部解决但并发最低。InnoDB默认RR。",
+    "user_answer": "读未提交会有脏读，读已提交解决了脏读但可能不可重复读，可重复读解决了不可重复读，串行化最高。InnoDB默认是可重复读，通过MVCC实现的。",
+    "expected_score": 70,
+    "expected_comment": "隔离级别和解决的问题基本正确，但缺少InnoDB通过间隙锁在RR下解决幻读的说明"
+  },
+  {
+    "id": "db-004",
+    "topic": "MVCC",
+    "question": "请解释InnoDB MVCC（多版本并发控制）的实现原理，以及它如何实现可重复读？",
+    "standard_answer": "MVCC通过每行记录的隐藏字段（DB_TRX_ID最后修改事务ID、DB_ROLL_PTR回滚指针指向undo log中的旧版本）实现多版本。每行数据有多个历史版本链在undo log里。Read View（读视图）包含当前活跃事务ID列表（m_ids）、最小活跃ID（up_limit_id）、最大事务ID+1（low_limit_id）。可重复读：事务开始时创建Read View并保持到结束（一致性读），之后查询只读此Read View——活跃事务的修改不可见，已提交的可见。读已提交：每条语句都重新创建Read View。所以RR下同一事务看到的数据始终一致。",
+    "user_answer": "MVCC给每行数据维护多个版本，通过undo log链实现。Read View记录了当前有哪些活跃事务，可重复读就是事务开始时的Read View一直用到结束，所以读到的数据始终是事务开始时的快照。",
+    "expected_score": 75,
+    "expected_comment": "MVCC原理正确，Read View的作用说明清楚，但缺少具体的隐藏字段和事务ID比较规则"
+  },
+  {
+    "id": "db-005",
+    "topic": "MySQL锁机制",
+    "question": "请说明MySQL InnoDB的行锁、间隙锁、临键锁的区别，以及各自的使用场景。",
+    "standard_answer": "行锁（Record Lock）：锁定单个索引记录，防止其他事务修改/删除该行，在RC和RR级别下都有。间隙锁（Gap Lock）：锁定索引记录之间的间隙（或第一个索引之前、最后一个索引之后），防止其他事务在间隙中插入，只在RR级别有，解决幻读。临键锁（Next-Key Lock）：行锁+间隙锁的组合，左开右闭区间（-∞, +∞），InnoDB RR级别下默认使用。例：索引值10,20,30，临键锁覆盖(10,20]、(20,30]等区间。当查询使用唯一索引且条件是等值查询时，Next-Key Lock退化为行锁。",
+    "user_answer": "行锁只锁一行，间隙锁锁的是两个记录之间的空隙不让插入，临键锁是行锁加间隙锁。间隙锁和临键锁是为了在可重复读下防止幻读。",
+    "expected_score": 61,
+    "expected_comment": "概念区分基本正确，但缺少退化规则（唯一索引等值查询退化为行锁）和区间范围的具体说明"
+  },
+  {
+    "id": "db-006",
+    "topic": "SQL优化",
+    "question": "请解释什么是explain，以及如何根据explain的结果优化慢查询？",
+    "standard_answer": "EXPLAIN是MySQL分析查询执行计划的命令。关键字段：type（访问类型，system>const>eq_ref>ref>range>index>ALL，ALL最差）、key（使用的索引名）、rows（预估扫描行数）、Extra（Using index表示索引覆盖，Using filesort需要优化排序，Using temporary需要优化分组/去重）。优化方向：1. 全表扫描→加合适的索引；2. Using filesort→排序字段建索引；3. Using temporary→优化GROUP BY/DISTINCT；4. 利用覆盖索引避免回表；5. 避免SELECT *，只查需要的列；6. 避免在WHERE中对索引列使用函数。",
+    "user_answer": "explain看查询计划，主要看type、key、rows、Extra。type从好到差有const、ref、range、index、ALL。慢查询就加索引或者改SQL。",
+    "expected_score": 51,
+    "expected_comment": "懂的太少且泛泛，缺少具体字段含义和优化措施的对应关系，Extra中的using filesort/temporary需要优化没提到"
+  },
+  {
+    "id": "db-007",
+    "topic": "Redis数据结构",
+    "question": "请说明Redis支持哪些数据类型，以及它们的底层实现方式。",
+    "standard_answer": "1. String（SDS简单动态字符串，自动扩容二进制安全）；2. List（quicklist——ziplist+双向链表，最新版本已改为quicklist）；3. Hash（ziplist或hashtable，默认512以内用ziplist）；4. Set（intset或hashtable，全整数且数量少用intset）；5. Zset（Sorted Set，ziplist或skiplist+dict的组合，128以内用ziplist）；6. Bitmap（基于String的位操作）；7. HyperLogLog（基数统计，固定12KB）；8. GEO（基于Zset实现）；9. Stream（消息队列数据类型）。",
+    "user_answer": "Redis有String、List、Hash、Set、Zset这五种基本类型。String底层是SDS，List底层是quicklist，Hash底层是ziplist或字典，Set是intset或字典，Zset是跳表加字典。还有Bitmap和GEO。",
+    "expected_score": 74,
+    "expected_comment": "五种基本类型和实现正确，但HyperLogLog和Stream未提及，底层切换条件（数据量阈值）不完整"
+  },
+  {
+    "id": "db-008",
+    "topic": "Redis持久化",
+    "question": "请对比Redis的RDB和AOF两种持久化方式的优缺点，以及混合持久化。",
+    "standard_answer": "RDB：按快照保存全量数据到dump.rdb（fork子进程写时复制）。优点：文件紧凑恢复快。缺点：丢数据多（两次快照间的数据丢失），fork阻塞主进程（数据量大时明显）。AOF：追加写操作日志到文件（三种刷盘策略：always每条刷，everysec每秒刷，no内核决定）。优点：丢数据少。缺点：文件体积大，恢复慢。AOF重写（BGREWRITEAOF）压缩日志。Redis 4.0后混合持久化：AOF重写时先写RDB头再写增量AOF，兼顾快速启动和低丢数据。",
+    "user_answer": "RDB是快照方式，文件小恢复快，但可能丢数据。AOF是记录操作日志，丢数据少但文件大恢复慢。混合持久化就是RDB加AOF，启动快又不怎么丢数据。",
+    "expected_score": 68,
+    "expected_comment": "基本对比正确，但缺少fork写时复制的细节、AOF重写机制和fsync策略（always/everysec/no）的说明"
+  },
+  {
+    "id": "db-009",
+    "topic": "Redis缓存淘汰",
+    "question": "请说明Redis的内存淘汰策略有哪些？以及LRU和LFU的区别。",
+    "standard_answer": "Redis内存淘汰策略：1. noeviction（不淘汰，写返回错误）；2. allkeys-lru（所有key中淘汰最近最少用）；3. volatile-lru（有过期时间的key中淘汰最近最少用）；4. allkeys-random（随机淘汰）；5. volatile-random（有过期时间中随机淘汰）；6. volatile-ttl（淘汰过期时间最近（即将过期）的）；7. allkeys-lfu（所有key中淘汰最不常用）；8. volatile-lfu（有过期时间中淘汰最不常用）。LRU：淘汰最近最少使用的，只考虑最后一次访问时间（Redis近似LRU：随机采样N个淘汰最旧的那个）。LFU：淘汰访问频率最低的，通过log16计数器记录访问频率，可抑制LRU的'一次性热点'问题。",
+    "user_answer": "Redis淘汰策略有noeviction、allkeys-lru、volatile-lru、allkeys-random等。LRU淘汰最近没用过的，LFU淘汰用得最少的。Redis的LRU是近似的不精确。",
+    "expected_score": 56,
+    "expected_comment": "策略列举不够全（未提到volatile-ttl和LFU变体），LRU/LFU区分正确但对Redis近似LRU的实现不够深入"
+  },
+  {
+    "id": "db-010",
+    "topic": "MySQL主从复制",
+    "question": "请解释MySQL主从复制的原理，以及binlog的三种格式（STATEMENT、ROW、MIXED）的区别。",
+    "standard_answer": "主从复制流程：主库提交事务时写binlog；从库IO线程连接主库读取binlog并写入本地relay log（中继日志）；从库SQL线程读取relay log并回放。binlog三种格式：STATEMENT——记录SQL语句，日志量小但可能主从不一致（如NOW()、UUID()等非确定函数）；ROW——记录每一行的数据变更，日志量大但最精确，不会出现不一致；MIXED——自动选择，对确定性SQL用STATEMENT，非确定性用ROW。MySQL 5.7.7之后默认ROW。",
+    "user_answer": "主库写binlog，从库拉binlog写到自己的relay log再回放。binlog有三种格式：STATEMENT记录SQL，ROW记录行变化，MIXED两者混合。ROW最安全但日志最大。",
+    "expected_score": 80,
+    "expected_comment": "主从复制流程和binlog格式说明准确，对比清晰，缺少GTID可选择性补充"
+  },
+  {
+    "id": "db-011",
+    "topic": "Redis哨兵与集群",
+    "question": "请对比Redis Sentinel（哨兵）和Redis Cluster的区别，以及各自解决什么问题。",
+    "standard_answer": "Sentinel：解决高可用问题（主从自动切换）。监控主从状态，主库宕机时自动将从库提升为主库，客户端通过Sentinel获取当前主库地址。Sentinel本身需至少3个节点（奇数）达成共识。Cluster：解决分布式存储问题（数据分片）。数据自动分片到16384个槽，分布在多个节点上，每个节点只存部分数据。支持水平扩展（加节点重新分片），也内置高可用（节点故障时槽迁移到其他节点）。Sentinel适用于数据量不大但需要高可用的场景，Cluster适用于数据量大需要水平扩展的场景。",
+    "user_answer": "Sentinel做高可用自动切换主从，Cluster做分布式分片存储。Sentinel至少3个节点，Cluster数据分到不同节点上存。",
+    "expected_score": 66,
+    "expected_comment": "核心分工正确，但缺少槽分配（16384）、Sentinel共识机制和Cluster自动故障迁移的具体说明"
+  },
+  {
+    "id": "db-012",
+    "topic": "MySQL B+树",
+    "question": "为什么MySQL InnoDB使用B+树而不是B树或红黑树做索引？B+树相比B树的优势是什么？",
+    "standard_answer": "B+树相比B树的优势：1. 非叶子节点只存键不存值（B树非叶子节点也存值），相同页大小下B+树每层能存更多键，树更矮，IO次数更少；2. 叶子节点有双向链表指针连接，范围查询（>、<、BETWEEN）只需找到起始位置然后顺序遍历链表，B树则需要反复中序遍历（离散IO）。3. 数据都在叶子节点，每次查询IO次数稳定（对比B树有的数据在根节点有在叶子节点）。不选红黑树：红黑树是二叉树，高度更高（logN），数据量大时IO次数太多。B树是平衡二叉树，树高决定了磁盘IO次数，B+树让树尽可能矮。",
+    "user_answer": "B+树只有叶子节点存数据，非叶子节点只存键，所以树更矮IO更少。而且叶子节点有链表连接，范围查询走链表就行，B树要来回走。相比红黑树，B+树更矮，磁盘IO更少。",
+    "expected_score": 88,
+    "expected_comment": "回答完整透彻，B+树两个核心优势（树矮+范围查询）都讲清楚了，对比充分"
+  },
+  {
+    "id": "db-013",
+    "topic": "Redis缓存穿透/击穿/雪崩",
+    "question": "请解释缓存穿透、缓存击穿、缓存雪崩的区别，以及各自的解决方案。",
+    "standard_answer": "缓存穿透：查询不存在的数据（既不在缓存也不在数据库），请求直接打到数据库。解决：布隆过滤器（拦截不存在key）、缓存空值（短暂缓存null值）。缓存击穿：热点key过期瞬间大量并发请求直击数据库。解决：互斥锁（只让一个线程去查DB重建缓存）、热点key设置永不过期+后台异步更新（逻辑过期）。缓存雪崩：大量key同时过期或Redis宕机，大量请求直击数据库。解决：过期时间加随机值分散、多级缓存（本地缓存如Caffeine）、限流降级、Redis高可用（主从/集群）。",
+    "user_answer": "缓存穿透查不存在的数据，用布隆过滤器解决。缓存击穿是热点key过期，大并发打到数据库，用互斥锁。缓存雪崩是大面积key同时过期或者Redis挂了，加随机过期时间。",
+    "expected_score": 85,
+    "expected_comment": "三种场景区分清晰，核心解决方案准确，缓存雪崩部分可额外补充多级缓存和限流"
+  },
+  {
+    "id": "db-014",
+    "topic": "MySQL死锁",
+    "question": "请分析MySQL中死锁产生的原因，以及如何排查和避免死锁？",
+    "standard_answer": "死锁产生：两个或多个事务分别持有对方需要的锁，互相等待形成环路。MySQL InnoDB自动检测死锁（wait-for graph），选择回滚代价较小的事务（按锁数量、修改行数等判断），并释放其持有的锁。排查：1. SHOW ENGINE INNODB STATUS查看最近死锁信息（LATEST DETECTED DEADLOCK）；2. 开启innodb_print_all_deadlocks记录所有死锁到错误日志；3. 分析死锁日志中的事务SQL和持有的锁。避免：1. 固定访问顺序（统一先访问A表再B表）；2. 避免大事务，尽快提交；3. 合理设计索引减少锁范围；4. 在RC隔离级别下工作（减少间隙锁）。",
+    "user_answer": "死锁是两个事务互相等对方的锁。InnoDB会自动检测死锁，选一个事务回滚。避免方法主要是保持一致的访问顺序，还有尽量让事务短一点。",
+    "expected_score": 59,
+    "expected_comment": "产生原因和避免策略基本正确，但缺少具体的排查手段（SHOW ENGINE INNODB STATUS）和间隙锁在RR级别下导致死锁的分析"
+  },
+  {
+    "id": "db-015",
+    "topic": "Redis事务",
+    "question": "请说明Redis事务的实现机制，以及它和MySQL事务的区别。",
+    "standard_answer": "Redis事务通过MULTI（开始）、EXEC（执行）、DISCARD（取消）、WATCH（乐观锁）实现。原理：MULTI后命令入队列不执行，EXEC时一次性批量执行（无错误则全部执行，有语法错误则全部不执行，但有运行时错误不影响其他命令）。Redis事务不保证原子性：不支持回滚，运行时错误（如类型错误）只跳过那条命令。与MySQL区别：1. Redis无ACID原子性（MySQL有undo log回滚）；2. Redis事务是乐观的（WATCH实现CAS），MySQL是悲观的（锁/MVCC）；3. Redis事务无隔离级别概念（单线程执行天然隔离）。",
+    "user_answer": "Redis事务用MULTI和EXEC，命令先入队再执行。不支持回滚，出错了不撤销。Redis单线程执行所以天然隔离。和MySQL比Redis的ACID不完整。",
+    "expected_score": 57,
+    "expected_comment": "Redis事务机制基本说清楚了，但MySQL事务对比太笼统，缺少WATCH和原子性（不支持回滚）的详细说明"
+  },
+  {
+    "id": "db-016",
+    "topic": "MySQL慢查询",
+    "question": "请列举MySQL中常见的慢查询原因，以及排查慢查询的工具链（不要只说explain）。",
+    "standard_answer": "常见原因：1. 索引缺失导致全表扫描；2. 索引设计不当（选择性低、复合索引顺序错）；3. SQL写法问题（SELECT *, 在索引列上使用函数/隐式类型转换）；4. 数据量太大未分区；5. 锁等待（行锁/间隙锁阻塞）；6. 大事务导致undo log膨胀影响查询；7. 服务器资源（内存不足、IOPS打满）。排查工具：慢查询日志（long_query_time、mysqldumpslow分析）；performance_schema（events_statements_summary_by_digest按模式汇总）；sys schema（statement_analysis视图）；pt-query-digest（Percona Toolkit，最强大）；show profile展示SQL各阶段耗时。",
+    "user_answer": "慢查询主要原因是没走索引或者SQL写得不好。用explain分析执行计划，看有没有走全表扫描。还可以开慢查询日志记录慢SQL。",
+    "expected_score": 41,
+    "expected_comment": "回答过于简略，没有提到多种慢查询原因（如锁等待、大事务、资源瓶颈）和工具链（performance_schema、pt-query-digest等）"
+  },
+  {
+    "id": "db-017",
+    "topic": "Redis分布式锁",
+    "question": "请设计一个基于Redis的分布式锁，需要考虑哪些问题？RedLock算法解决了什么问题？",
+    "standard_answer": "分布式锁设计：SETNX key value实现（SET key value NX EX 30），设置唯一标识（如UUID+线程ID）作为value，防止误删（解锁时先检查value是否自己设置，用Lua脚本保证原子性）。需要考虑：锁超时自动释放（防止死锁）；可重入（同线程重复获取不阻塞）；锁续期（Redisson Watch Dog思想）；性能（减少网络开销）。RedLock：解决主从架构下锁丢失问题——客户端向N个独立Redis节点依次加锁，超过N/2+1成功才算加锁成功，确保即使部分节点故障锁信息也不丢失。但RedLock存在争议（Martin Kleppmann反对），实际常用Redisson的公平锁方案。",
+    "user_answer": "用SET NX EX实现，value设为唯一ID防止误删。要设置超时防止死锁。RedLock就是向多个Redis节点同时加锁，过半成功才算成功。",
+    "expected_score": 54,
+    "expected_comment": "基本方案和RedLock概念正确，但缺少解锁的Lua脚本保证原子性、锁续期（Watch Dog）和可重入机制等重要细节"
+  },
+  {
+    "id": "db-018",
+    "topic": "MySQL分库分表",
+    "question": "请解释什么是数据库分库分表，以及常见的分片策略。水平分表和垂直分表有什么区别？",
+    "standard_answer": "垂直分表：将大表的列拆分到多个表，把不常用或大字段（如text/blob）分离出去，减少单行宽度（一页能存更多行）。水平分表：按某个键将数据分布到多个相同结构的表中（通常用取模或范围）。分库：按业务拆分到不同数据库（不同实例），解决单库连接数/IO瓶颈。常见分片策略：范围分片（按时间区间、ID范围）、哈希分片（取模/一致性哈希）、按业务字段分片（如按用户ID）。分库分表后面临的问题：跨分片查询（需要聚合/中间件）、分布式事务、全局主键、跨分片排序分页。常用中间件：ShardingSphere、MyCAT、Vitess。",
+    "user_answer": "垂直分表是把字段拆分到不同的表，水平分表是把数据行拆分到不同表。分库就是分到不同的数据库。常用范围分片或哈希分片。分片后面临跨分片查询和分布式事务的问题。",
+    "expected_score": 62,
+    "expected_comment": "基本形式正确但缺乏具体细节，特别是跨分片查询的解决方案和常见中间件没有提及"
+  }
+]

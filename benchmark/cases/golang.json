@@ -1,0 +1,173 @@
+[
+  {
+    "id": "go-001",
+    "topic": "GMP 模型",
+    "question": "请解释Go语言GMP调度模型中G、M、P三者的作用，以及它们是如何协作的。",
+    "standard_answer": "G（Goroutine）：轻量级协程，包含栈、寄存器、状态等，Go的并发执行单元。M（Machine）：操作系统线程，负责执行G，一个M对应一个内核线程。P（Processor）：逻辑处理器，管理本地G队列，限制并发数（GOMAXPROCS）。协作：M必须绑定P才能执行G。P维护本地G队列（LRQ）和全局G队列（GRQ）。当G进行系统调用阻塞时，M释放P（P去绑其他M），G跑完后M找新的P。工作窃取（Work Stealing）：当P的本地队列为空时，从其他P或全局队列偷G执行。系统调用监控：M被syscall阻塞时，P迁移到其他M。",
+    "user_answer": "G是goroutine，M是线程，P是处理器。M要绑定P才能跑G。每个P有自己的本地队列，还有其他队列里的G。一个P没活了就去偷其他P的。",
+    "expected_score": 65,
+    "expected_comment": "基本理解三者和work stealing概念，但缺少GOMAXPROCS、系统调用时的P迁移、全局队列等关键细节"
+  },
+  {
+    "id": "go-002",
+    "topic": "channel",
+    "question": "请说明Go语言中channel的底层实现原理，以及有缓冲和无缓冲channnel的区别。",
+    "standard_answer": "channel底层是hchan结构体：循环队列（buf）、发送等待队列（sendx/sendq）、接收等待队列（recvx/recvq）、互斥锁（mutex）。无缓冲channel：发送和接收必须同时准备好，否则阻塞对方——发送方阻塞直到有接收方取走，接收方阻塞直到有发送方发送。有缓冲channel：发送方将数据放入循环队列，队列满才阻塞；接收方从队列取，队列空才阻塞。关闭channel后，未取完的数据可继续接收，之后再接收返回零值。channel遵循FIFO原则，有缓冲channel的发送/接收操作是原子的。",
+    "user_answer": "channel底层有缓冲区、发送和接收的等待队列。无缓冲就是发和收必须同时准备好，不然就阻塞。有缓冲的可以存多个值在缓冲里，满了才阻塞。",
+    "expected_score": 68,
+    "expected_comment": "核心机制正确，但缺少hchan结构体描述、关闭channel后的行为说明"
+  },
+  {
+    "id": "go-003",
+    "topic": "slice底层",
+    "question": "请解释Go语言slice（切片）的底层数据结构，以及扩容机制。",
+    "standard_answer": "slice底层结构：指向底层数组的指针（data）、长度（len）、容量（cap）。扩容规则：1. 新容量<1024时翻倍（double）；2. 新容量≥1024时每次增加25%（1.25倍）；3. 具体受内存对齐影响（cap > 2*len时会调整）。当append超出cap时，Go重新分配更大的底层数组（新数组长度=扩容后的cap），将原数据拷贝过去。这意味着slice作为函数参数时，内部append可能不改变外部的len/cap（因为扩容后指向新数组）。多个slice共享底层数组时，相互修改可能互相影响（需注意）。",
+    "user_answer": "slice由指针、len、cap组成。扩容时小于1024翻倍，大于1024涨25%。append超出cap会重新分配数组并把旧数据拷过去。函数传slice要注意扩容后指向变了。",
+    "expected_score": 82,
+    "expected_comment": "结构体和扩容规则准确，共享底层数组问题也提到了，但缺少扩容具体受内存对齐影响的情况"
+  },
+  {
+    "id": "go-004",
+    "topic": "defer",
+    "question": "请说明Go语言中defer的执行时机和执行顺序，以及defer、return、返回值三者之间的执行关系。",
+    "standard_answer": "defer在函数返回前执行（return语句之后、函数真正返回之前），多个defer按后进先出（LIFO/栈）顺序执行。defer、return、返回值关系：return语句先将返回值赋值给返回值变量（如果是命名返回值则直接赋值），然后执行defer，最后函数返回。所以defer可以修改命名返回值（因为命名返回值是函数作用域的变量，defer闭包可以引用和修改它），但不能修改非命名返回值。defer常用于：释放锁、关闭文件、recover panic。defer的参数在defer声明时求值（值捕获），不是执行时求值。",
+    "user_answer": "defer在函数返回前执行，多个defer按栈顺序后进先出。return先把值赋给返回值，然后执行defer，最后返回。defer可以修改命名返回值，但不能修改非命名返回值。defer的参数在声明时就已经算好了。",
+    "expected_score": 77,
+    "expected_comment": "执行顺序、返回值关系和参数求值时机都正确，可补充defer影响性能的注意事项"
+  },
+  {
+    "id": "go-005",
+    "topic": "map",
+    "question": "请解释Go中map的底层实现原理，以及为什么map是并发不安全的？如何安全使用？",
+    "standard_answer": "map底层是哈希表（hmap结构体）：B是桶数的对数（2^B个桶），桶（bmap）最多存8个key-value，溢出用overflow指针链接到新桶。扩容条件：负载因子>6.5或溢出桶过多。增量扩容：每次访问时渐进式迁移一部分，不是一次性全部迁移。map并发不安全：因为map的读写操作没有内置锁（读写时可能发生并发写/并发读写，导致fatal error: concurrent map writes/reads）。安全使用方式：1. sync.RWMutex+map自己封装；2. sync.Map（适合读多写少的场景，采用读写分离+双map结构）。sync.Map读快写慢（适合读远多于写的场景）。",
+    "user_answer": "map底层是哈希表，有多个桶，每个桶存8个键值对，多了用溢出链。扩容条件是负载因子大或溢出桶多。map并发不安全因为没有锁，用sync.Mutex或sync.Map来安全读写。",
+    "expected_score": 71,
+    "expected_comment": "哈希表和并发问题基本正确，但增量扩容（渐进式迁移）和sync.Map的读写分离原理未说明"
+  },
+  {
+    "id": "go-006",
+    "topic": "interface",
+    "question": "请解释Go的interface底层实现，以及空interface和带方法interface的区别。",
+    "standard_answer": "interface底层由类型元数据（type）和值（data/ptr）两部分组成。带方法的interface（eface vs iface）：空interface（interface{}）是eface结构——_type（指向类型信息）和data（指向值）。带方法的interface（iface）是iface结构——tab（itab，包含接口类型信息+具体类型信息+函数指针列表）和data（指向值）。itab由Go运行时动态生成并缓存（按接口类型和具体类型组合）。nil interface和一个非nil类型的nil值不等价（因为type部分不是nil）。Go的接口是duck typing——无需显式声明实现，结构体实现了接口的所有方法就自动满足接口。",
+    "user_answer": "interface底层存了类型和值。空接口就是interface{}不包含方法，带方法的接口存了类型信息和函数指针表。接口是鸭子类型，实现了方法就自动满足接口。要注意nil的interface和interface里有nil值不一样。",
+    "expected_score": 58,
+    "expected_comment": "理解了鸭子类型和nil区分，但eface/iface结构体（_type/itab）的底层细节不够清晰"
+  },
+  {
+    "id": "go-007",
+    "topic": "goroutine 泄漏",
+    "question": "什么是goroutine泄漏？常见的泄漏场景有哪些？如何防止？",
+    "standard_answer": "goroutine泄漏指goroutine持续存活不被回收，但已经不能正常工作或不参与业务逻辑——GC不会回收goroutine，泄漏累积会导致内存耗尽。常见场景：1. channel阻塞：goroutine向无缓冲channel发送数据但无接收方，或从channel接收但无发送方且未正确关闭；2. 死循环：goroutine内for-select无break/return条件；3. 定时器泄漏：time.Ticker创建后未调用Stop；4. 启动后无法退出：没有context取消或done信号。防止：1. 使用context.WithCancel控制goroutine生命周期；2. 明确的done channel信号；3. 使用errgroup/waitgroup管理goroutine；4. 使用go-leak等工具检测测试中的泄漏。",
+    "user_answer": "goroutine泄漏就是goroutine一直占用资源回不去了。常见于channel阻塞没人读写，或者for循环没退出来。用context来控制取消，或者加done channel通知退出。",
+    "expected_score": 63,
+    "expected_comment": "概念和常见场景基本覆盖，但缺少定时器泄漏和errgroup等管理工具的具体说明"
+  },
+  {
+    "id": "go-008",
+    "topic": "GC",
+    "question": "请说明Go GC的演进过程，以及当前Go GC的触发机制和STW（Stop The World）情况。",
+    "standard_answer": "Go GC演进：Go 1.5之前——标记清除+全STW；Go 1.5——三色标记+并发GC（大部分并发，小部分STW）；Go 1.8——混合写屏障（结合插入写屏障和删除写屏障），将STW缩短到微秒级；Go 1.12——简化标记终止阶段；Go 1.19+——regions分配器优化。当前Go GC是并发三色标记-清除（CMS-like），触发条件：1. 堆内存达到GOGC比例（默认100%，即堆大小翻倍时触发）；2. 2分钟未GC则强制触发。STW只有两个短暂阶段：标记启动阶段和标记终止阶段（通常<500μs）。GC调优：GOGC环境变量、减少内存分配、复用对象。",
+    "user_answer": "Go GC从全STW演进到现在的并发三色标记。通过GOGC控制触发频率，默认100%就是说堆内存翻倍了才触发。现在STW只有很短的两次，通常在微秒级别。写屏障是并发标记的关键。",
+    "expected_score": 76,
+    "expected_comment": "GC演进和触发机制正确，写屏障和STW理解到位，可补充三色标记的详细流程"
+  },
+  {
+    "id": "go-009",
+    "topic": "select",
+    "question": "请解释Go中select语句的执行规则，以及select和channel配合的常见模式。",
+    "standard_answer": "select规则：1. 同时评估所有case中的channel操作（收发都阻塞则阻塞，多路就绪则随机选一个执行）；2. 如果多个case同时就绪，Go伪随机选择一个（保证公平）；3. 如果有default case且其他case都阻塞，执行default（实现非阻塞收发）；4. nil channel永远阻塞，可用于动态禁用case。常见模式：1. 超时控制（select + time.After）；2. 退出信号（select + done channel）；3. 非阻塞收发（select + default）；4. 同时从多chan消费（fan-in扇入模式）；5. 随机选择（利用select的随机性从多个chan中选一个）。",
+    "user_answer": "select监听多个channel，有数据就执行对应case。多个同时就绪的话随机选一个。可以用default实现非阻塞。nil channel在select里永远阻塞。配合time.After做超时控制很常用。",
+    "expected_score": 70,
+    "expected_comment": "基本规则正确但不够详细，缺少nil channel阻塞可以动态禁用case和常见模式列举不全"
+  },
+  {
+    "id": "go-010",
+    "topic": "panic 和 recover",
+    "question": "请说明Go中panic和recover的机制，以及recover只在defer中有效的原理。",
+    "standard_answer": "panic：程序遇到不可恢复错误时触发，当前goroutine开始panic——逐层执行defer（每个函数退出前执行defer），如果一直未被recover则输出堆栈后goroutine崩溃。recover：捕获panic恢复执行，只能在defer中有效（因为在非defer中执行时panic还没发生或已经传播过去了，recover返回nil）。原理：panic发生时，Go运行时在当前goroutine的g结构体的_panic链表中记录panic信息，defer函数执行时可以调用recover检查是否有panic正在发生，有则标记为已恢复并停止panic传播。recover在非defer中调用时，_panic链表不在当前执行栈的defer调用链中。",
+    "user_answer": "panic是出了严重错误，会一路执行defer然后崩溃。recover可以捕获panic让程序继续运行，但必须在defer里面调用才有效。",
+    "expected_score": 48,
+    "expected_comment": "基本理解panic/recover的作用但过于简略，缺少defer链传播机制和recover只在defer中生效的原理"
+  },
+  {
+    "id": "go-011",
+    "topic": "反射",
+    "question": "请说明Go反射（reflect）的实现原理，以及它的性能代价来自哪里？",
+    "standard_answer": "Go反射基于接口实现：reflect.TypeOf(i)从eface/iface的_type字段获取类型信息；reflect.ValueOf(i)获取值的包装，可读/写值。性能代价来源：1. 逃逸到堆——reflect.ValueOf的参数是interface{}导致参数逃逸到堆；2. 动态派发——所有调用都通过reflect.Value的call方法间接调用，无法内联，无法编译期优化；3. 类型检查——运行时反射每次需进行类型安全检查（如Kind()判断）；4. 内存分配——反射调用方法/创建对象涉及大量小对象分配。Go官方建议：能用泛型/接口的地方不用反射。反射在框架代码中使用较多（如JSON序列化、ORM映射）。",
+    "user_answer": "反射通过reflect.TypeOf和reflect.ValueOf获取类型信息和值。性能差主要是因为逃逸到堆、不能内联优化、运行时类型检查开销大。能用泛型就不用反射。",
+    "expected_score": 74,
+    "expected_comment": "获取类型信息和性能开销分析正确，可补充反射可用于运行时动态调用方法的具体例子"
+  },
+  {
+    "id": "go-012",
+    "topic": "并发模式",
+    "question": "请说明Go中常见的并发模式：扇出（Fan-Out）、扇入（Fan-In）、Pipeline。",
+    "standard_answer": "Pipeline模式：将处理过程分成多个阶段，每个阶段是一个goroutine，通过channel连接。如：gen()→square()→print()三个goroutine串联。扇出（Fan-Out）：一个输入channel分发到多个goroutine处理，提高并发度。当单个goroutine处理能力不够时使用，每个goroutine从输入channel竞争读取。扇入（Fan-In）：将多个输入channel合并到一个输出channel，典型实现——启动多个goroutine各自读取输入，输出都发送到同一个channel，或者用select监听多个输入channel。结合使用：gen()→多个worker goroutine（扇出）→merge goroutine（扇入）→print()。",
+    "user_answer": "Pipeline就是链式处理用channel连起来。扇出是一个数据源分给多个worker处理，扇入是把多个结果合并到一个channel。经常结合在一起用。",
+    "expected_score": 55,
+    "expected_comment": "概念理解正确但描述过于简略，缺少具体实现模式和goroutine间协调的细节"
+  },
+  {
+    "id": "go-013",
+    "topic": "内存对齐",
+    "question": "请解释Go中的内存对齐规则，为什么需要内存对齐？如何优化结构体字段顺序减少内存占用？",
+    "standard_answer": "内存对齐：变量的地址必须能被其自身大小整除（如int64地址能被8整除）。原因：CPU以字为单位访问内存，未对齐的变量需要两次内存访问，对齐后一次，提高访问效率。Go结构体对齐规则：结构体总大小是最大字段对齐值的整数倍（padding填充）。优化：将大字段（相同大小的字段）放一起，小字段放一起，减少padding。例：bool（1）+int64（8）+bool（1）+int64（8）正常需1+7(pad)+8+1+7(pad)+8=32字节，优化为bool+bool（紧排）+int64+int64=1+1+6(pad)+8+8=24字节。Go结构体字段顺序非常影响内存占用。",
+    "user_answer": "内存对齐就是变量地址要能被它大小整除，这样CPU访问快。结构体里不同大小的字段之间会有填充。把相同大小的字段放一起可以减少填充，节省内存。",
+    "expected_score": 67,
+    "expected_comment": "原理和优化方法正确，但未说明最大对齐值和结构体总大小对齐规则"
+  },
+  {
+    "id": "go-014",
+    "topic": "context",
+    "question": "请说明Go标准库context包的作用，以及WithCancel、WithDeadline、WithTimeout、WithValue的用法。",
+    "standard_answer": "context用于跨goroutine传递取消信号、超时控制和请求范围数据。WithCancel：返回可取消的context和cancel函数，调用cancel时所有派生context都会收到取消信号。WithDeadline：在指定时间点自动取消，也可提前手动cancel。WithTimeout：是WithDeadline的封装，传入持续时间而非绝对时间。WithValue：绑定键值对（key必须是自定义类型避免冲突），用于传递trace ID、认证信息等请求范围数据。Context最佳实践：1. 作为函数的第一个参数传递；2. 不要将context存在结构体中；3. 及时调用cancel释放资源；4. 使用context实现优雅退出。",
+    "user_answer": "context用于控制goroutine的生命周期，传取消信号和超时。WithCancel手动取消，WithTimeout设超时时间自动取消，WithValue传一些请求相关的数据。context一般作为函数的第一个参数传。",
+    "expected_score": 78,
+    "expected_comment": "各With函数说明清晰，最佳实践也提到了，可补充WithDeadline和WithTimeout的区别"
+  },
+  {
+    "id": "go-015",
+    "topic": "string",
+    "question": "请说明Go中string的底层结构，以及为什么string是不可变的？字符串拼接有哪些方式？",
+    "standard_answer": "string底层结构是reflect.StringHeader：Data（指向底层字节数组的指针，unsafe.Pointer）和Len（长度，int）。string不可变：字符串创建后底层字节数组不能被修改（编译器和运行时都有保护），原因是保证字符串作为map key的稳定性、支持子串操作零拷贝（没有拷贝写担心）、便于字符串常量池共享。字符串拼接方式：+操作符（小字符串，每次生成新string，重复拼接性能差）；strings.Builder（推荐，内部bytes.Buffer，WriteString追加，最后String()一次生成，避免多次分配）；bytes.Buffer（类似）；fmt.Sprintf（最灵活但性能最差）；strings.Join（特定分隔符拼接切片）。",
+    "user_answer": "string底层是Data指针和Len长度。字符串不可变是因为Go设计成这样的，安全而且方便做map key。拼接小量用+，大量用strings.Builder性能好。",
+    "expected_score": 66,
+    "expected_comment": "结构和不可变性原因基本正确，strings.Builder推荐对了，但缺少零拷贝子串和常量池共享的解释"
+  },
+  {
+    "id": "go-016",
+    "topic": "sync.WaitGroup",
+    "question": "请解释sync.WaitGroup的原理和使用注意事项，以及Add()、Done()、Wait()的执行顺序要求。",
+    "expected_score": 52,
+    "expected_comment": "基本用法正确但原理和注意事项不够，缺少状态机转移和重用规则的细节",
+    "user_answer": "WaitGroup用来等一组goroutine都执行完。Add加计数，Done减计数，Wait阻塞直到计数为0。注意Add要在goroutine外面调用，Done里面调。",
+    "standard_answer": "WaitGroup底层是状态机：内部有64位状态——高32位存计数器（计数值），低32位存等待者数量。Add(delta)给计数器加delta（可正可负）。Done()内部调用Add(-1)。Wait()将等待者+1并阻塞。当计数器减到0时唤醒所有等待者。状态机保证：Add必须在goroutine启动之前调用（或在goroutine中但在Wait之前确定已完成）。注意事项：1. 计数小于0会panic；2. 不能在Add计数器未归零时重用（可配合sync.WaitGroup.Reuse或Reset，但go 1.21前无Reset，需Wait之后才能重用）；3. 调用Wait后不能再Add（除非计数器已归零）。典型pattern：wg.Add(N) → 启动N个goroutine，每个goroutine defer wg.Done() → wg.Wait()"
+  },
+  {
+    "id": "go-017",
+    "topic": "指针 vs 值接收者",
+    "question": "请说明Go中方法接收者为指针和值的区别，以及在什么场景下应该用指针接收者？",
+    "standard_answer": "值接收者：方法操作的是结构体的副本（拷贝），原结构体不会被修改。指针接收者：方法操作的是原结构体（地址），可修改原值。两种接收者都满足接口的规则是——值类型变量可以调用值接收者和指针接收者的方法，但指针类型变量可以调用任意的方法。接口实现时要注意：如果接口的方法要求指针接收者，那么值类型的变量不会满足该接口（因为Go没有办法获取值的地址去调用指针接收者方法）。选择指针接收者的场景：1. 需要修改接收者的状态（setter方法）；2. 结构体很大（避免拷贝开销）；3. 方法内部有延迟操作需要在方法返回后继续持有修改（如start goroutine捕获指针）。相反，小结构体（如time.Time）或不可变类型适合值接收者。",
+    "user_answer": "指针接收者可以修改原结构体，值接收者修改的是副本。大结构体用指针避免拷贝，需要修改状态的用指针。要注意值类型变量不能调用指针接收者接口方法。",
+    "expected_score": 73,
+    "expected_comment": "核心区分和选择标准正确，但值类型调用指针接收者方法的条件描述不够精确"
+  },
+  {
+    "id": "go-018",
+    "topic": "race condition",
+    "question": "请说明Go中数据竞争（data race）的检测方法，以及如何避免。",
+    "standard_answer": "数据竞争：多个goroutine同时读写同一内存地址，至少有一个是写操作且没有同步机制。检测：1. go run -race / go build -race 内置的竞态检测器（基于ThreadSanitizer，运行时检测所有共享内存访问，只在race模式下生效）；2. 使用sync/atomic包保证原子操作；3. 静态代码分析工具（如go vet无race检测，需-race）。避免方法：1. 互斥锁（sync.Mutex）保护共享数据；2. 使用原子操作（sync/atomic包，适合简单计数器）；3. 使用channel传递数据（不要共享内存，通过通信共享内存）；4. 不可变数据（不要在goroutine间共享可变对象）。",
+    "user_answer": "数据竞争就是多个goroutine同时操作同一变量而且有写操作。用go run -race检测。避免用互斥锁或者channel传递数据，Go的哲学是通过通信来共享内存。",
+    "expected_score": 75,
+    "expected_comment": "检测方法和避免手段基本覆盖完整，Go哲学引用恰当，可补充atomic包的适用场景"
+  },
+  {
+    "id": "go-019",
+    "topic": "mutex 饥饿模式",
+    "question": "请说明Go 1.8之后sync.Mutex的两种模式——正常模式和饥饿模式，以及为什么需要饥饿模式？",
+    "standard_answer": "正常模式（非公平模式）：等待者按FIFO排队，但新到来的goroutine尝试自旋获取锁（如果锁刚释放），可能会比队列中的等待者先拿到锁，容易导致等待者饥饿。饥饿模式（公平模式）：自1.8引入，当等待者等待超过1ms时进入饥饿模式。饥饿模式下：锁直接交给队首等待者，新来的goroutine不自旋也不尝试获取，直接排到队尾。当队首等待者拿到锁且等待时间<1ms时，退出饥饿模式恢复为正常模式。需要饥饿模式的原因：防止尾部延迟（tail latency）——在正常模式下，高吞吐场景下部分等待者可能长时间拿不到锁，导致非常高的延迟尾部。饥饿模式牺牲部分吞吐量保证公平性。",
+    "user_answer": "Go的Mutex有正常和饥饿两种模式。正常模式新的goroutine可能比老的高兴的抢先拿到锁，饥饿模式就让排队的先拿。等太久就会切到饥饿模式。",
+    "expected_score": 42,
+    "expected_comment": "理解严重不足，饥饿模式和正常模式的切换机制描述混乱，缺少1ms切换阈值和自旋行为的说明"
+  }
+]

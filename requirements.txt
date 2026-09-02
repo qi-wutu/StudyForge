@@ -1,0 +1,19 @@
+# 如需离线 embedding 模型，需设置环境变量：
+#   HF_ENDPOINT=https://hf-mirror.com
+# 或在 ~/.cache/huggingface/ 下缓存 BAAI/bge-small-zh-v1.5
+
+# 核心依赖
+langchain-openai
+langgraph
+rank-bm25
+jieba
+fastapi
+uvicorn[standard]
+python-multipart
+pymysql
+sqlalchemy>=2.0
+requests
+python-dotenv
+
+# RAG 混合检索（向量部分）
+sentence-transformers
