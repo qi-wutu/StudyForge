@@ -7,6 +7,7 @@ server.log
 # ——— 前端构建产物 ———
 node_modules/
 frontend/dist/
+*.tsbuildinfo
 
 # ——— 本地文档（不随仓库提交） ———
 docs_local/

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from service import session_service, import_service, stats_service
+from service.chat_service import chat_service
 from service.review_service import review_service
 
 router = APIRouter()
@@ -32,6 +33,10 @@ class ImportRequest(BaseModel):
 
 class AnswerRequest(BaseModel):
     answer: str
+
+
+class ChatRequest(BaseModel):
+    message: str
 
 
 # ========================================
@@ -183,6 +188,21 @@ def exit_review(thread_id: str):
 def list_active_reviews():
     """查看当前正在进行的复习会话"""
     return {"active": review_service.list_active()}
+
+
+# ========================================
+# 自然语言对话（V1.1 入口）
+#
+# 把「自然语言输入 → 意图识别 → 分发」做成一个入口。
+# 内部复用 review_service / stats_service / import_service + 轻量 qa。
+# 现有各功能端点保留，后续可用对话逐步替代（见 ROADMAP）。
+# ========================================
+
+@router.post("/api/chat")
+def chat(req: ChatRequest, session_id: Optional[int] = Query(None)):
+    """自然语言交流入口——识别意图并分发到对应能力"""
+    sid = session_service.resolve_session_id(session_id)
+    return chat_service.chat(sid, req.message)
 
 
 # ========================================

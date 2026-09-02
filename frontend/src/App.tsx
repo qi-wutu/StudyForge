@@ -7,9 +7,11 @@ import Sessions from "./pages/Sessions";
 import Import from "./pages/Import";
 import Review from "./pages/Review";
 import Analysis from "./pages/Analysis";
+import Chat from "./pages/Chat";
 
 const navItems = [
   { path: "dashboard", label: "概览", icon: "■" },
+  { path: "chat", label: "对话", icon: "💬" },
   { path: "sessions", label: "会话", icon: "☰" },
   { path: "import", label: "导入", icon: "↑" },
   { path: "review", label: "复习", icon: "▶" },
@@ -97,6 +99,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/chat" element={<Chat />} />
           <Route path="/sessions" element={<Sessions />} />
           <Route path="/import" element={<Import />} />
           <Route path="/review" element={<Review />} />

@@ -100,3 +100,21 @@ export interface AnalyzeData {
   global_stats: GlobalStats;
   llm_report?: string;
 }
+
+// ===== 对话（V1.1 自然语言入口） =====
+
+export type ChatResult =
+  | { type: "chat"; text: string }
+  | {
+      type: "question";
+      data: { question: string; kp_title: string; kp_content: string; review_reason: string };
+    }
+  | {
+      type: "review_result";
+      evaluation: Evaluation;
+      exit: boolean;
+      next: { question: string; kp_title: string; kp_content: string; review_reason: string } | null;
+    }
+  | { type: "answer"; text: string; has_context: boolean }
+  | { type: "analysis"; data: AnalyzeData }
+  | { type: "imported"; data: { count: number } };
