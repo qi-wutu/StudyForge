@@ -111,6 +111,8 @@ StudyForge/
 │   └── README.md           # 评测三维度说明
 │
 └── docs/                    # 公开文档
+    ├── ROADMAP.md           # 版本路线（V1 现状 + V2 规划）
+    ├── ARCHITECTURE.md      # 整体架构
     └── decisions/           # 设计决策记录（6 篇）
 
 ---
@@ -329,4 +331,4 @@ python-dotenv
 
 - 多文档混合复习
 - 遗忘曲线间隔重复
-- V2 版本：意图识别 + 多 Agent 编排（规划详见本地 HANDOFF 文档）
+- V2 版本：意图识别 + 自然语言对话 + 多 Agent 编排（详见 [ROADMAP](docs/ROADMAP.md)）
