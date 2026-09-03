@@ -1128,14 +1128,38 @@ AI/LLM：        openai, langchain-core, langchain-openai, langgraph
 
 ## 12. 与 V2 的关系
 
-项目有 V2 规划，核心变化：
+### 12.1 V1.1 已做（自然语言交流入口）
+
+V1.1 给 V1 加了一个"听得懂话"的对话皮层（见 [ROADMAP](ROADMAP.md)）：
+
+```
+前端 Chat 页 ── POST /api/chat ──► chat_service（对话分发，规则版）
+                                        ├── nlu/intent.py   意图识别（8 类，规则优先）
+                                        ├── review_service  复习（复用，不变）
+                                        ├── stats_service   分析（复用，不变）
+                                        ├── import_service  导入（复用，不变）
+                                        └── qa_service      轻量问答（新增，检索+回答）
+```
+
+- `nlu/`、`service/chat_service.py`、`service/qa_service.py`、前端 `pages/Chat.tsx` 为新增
+- V1 的 LangGraph 图（import_graph / review_graph）、存储、检索全部未动
+- 对话内存态放 `chat_service._convs`（同 `_active_reviews`，服务重启即失）
+
+### 12.2 V1.2 / V1.3 规划
+
+- **V1.2 架构重构 · 子 Agent 化**：把"对话分发"从规则版升级成真正的 supervisor 结构——定义可独立调用的子 Agent（review/qa/import/analyze），`interrupt` 上移到主图边界，拆分共享 `AgentState`。见 [issue #1](https://github.com/qi-wutu/StudyForge/issues/1)。
+- **V1.3 LLM 辅助意图识别**：规则快路 + LLM 兜底，输出结构化 `{intent, params}`。见 [issue #2](https://github.com/qi-wutu/StudyForge/issues/2)。
+
+### 12.3 V2 目标
+
+项目有 V2 规划（LangGraph supervisor 多 Agent 编排），核心变化：
 
 | 维度 | V1（当前） | V2（规划） |
 | --- | --- | --- |
 | 路由 | 简单 HTTP -> graph | 意图识别节点 + 多图编排 |
 | 工具 | 仅有搜索 | 搜索 + 计算器 + 文档查询 + ... |
 | 图 | 两个独立图 | 一个主图调度多个子图 |
-| Agent | 单 Agent | Multi-Agent 协作 |
+| Agent | 单 Agent + 规则分发 | Multi-Agent 协作 |
 
 **V1 的架构设计为 V2 预留了什么：**
 

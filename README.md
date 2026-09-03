@@ -41,6 +41,7 @@ python main.py
 | --- | --- |
 | **概览** | Dashboard：会话名称、知识点总数、答题记录、平均分、薄弱数 |
 | **会话管理** | 创建/切换会话，数据隔离互不干扰 |
+| **对话（V1.1）** | 自然语言入口：说「复习」「问知识点」「哪里薄弱」就自动分发 |
 | **导入资料** | 上传 `.md`/`.txt` 文件或粘贴文本，AI 自动提取知识点 |
 | **复习** | AI 出题 → 输入回答 → AI 评分 + 评语 + 优缺点 + 缺失知识点 |
 | **薄弱分析** | 薄弱排行榜 + 高频缺失 + AI 分析报告 |
@@ -63,7 +64,12 @@ StudyForge/
 │   ├── session_service.py  # 会话 CRUD + session_id 解析
 │   ├── import_service.py   # 资料导入：调 import_graph 提取知识点
 │   ├── review_service.py   # 复习管理：驱动 review_graph 暂停/恢复
-│   └── stats_service.py    # 统计分析：Dashboard、知识点列表、薄弱分析
+│   ├── stats_service.py    # 统计分析：Dashboard、知识点列表、薄弱分析
+│   ├── chat_service.py     # 对话分发（V1.1）：意图 → 调各子能力
+│   └── qa_service.py       # 知识问答（V1.1）：混合检索 + grounded 回答
+│
+├── nlu/                    # 自然语言理解（V1.1）
+│   └── intent.py           # 简易意图识别（规则优先，8 类 intent）
 │
 ├── graph/                  # LangGraph 核心
 │   ├── state.py            # Agent 状态定义
@@ -99,6 +105,7 @@ StudyForge/
 │   │   │   └── useReview.ts   # 复习状态机（useReducer，6 阶段）
 │   │   └── pages/
 │   │       ├── Dashboard.tsx  # 概览页：统计卡片 + 快捷操作
+│   │       ├── Chat.tsx       # 对话页（V1.1）：自然语言交流入口
 │   │       ├── Sessions.tsx   # 会话管理：创建 / 切换
 │   │       ├── Import.tsx     # 资料导入：上传文件 / 粘贴文本
 │   │       ├── Review.tsx     # 复习：6 阶段状态机渲染
@@ -109,6 +116,9 @@ StudyForge/
 │   ├── run.py              # 评测入口
 │   ├── cases/              # 5 大主题 93 道主观题
 │   └── README.md           # 评测三维度说明
+│
+├── tests/                  # 单元测试（pytest）
+│   └── test_intent.py      # 意图识别用例（8 类 intent + 复习语境消歧）
 │
 └── docs/                    # 公开文档
     ├── ROADMAP.md           # 版本路线（V1 现状 + V2 规划）
@@ -240,6 +250,7 @@ tools/engine.py
 | GET | `/api/sessions` | 会话列表 | — |
 | POST | `/api/sessions` | 创建会话 | — |
 | POST | `/api/sessions/{id}/switch` | 切换（查会话信息） | - |
+| POST | `/api/chat` | 自然语言对话入口（V1.1）：识别意图并分发 | session_id |
 | GET | `/api/sessions/current` | 当前会话信息 | 可选 |
 | POST | `/api/import` | 粘贴文本导入 | session_id |
 | POST | `/api/import/file` | 上传文件导入 | session_id |
@@ -327,8 +338,18 @@ python-dotenv
 - [x] 亮色/暗色主题切换
 - [x] 开源准备（.gitignore、LICENSE、.env.example）
 
+### V1.1（自然语言交流入口）
+
+- [x] 对话页 + `POST /api/chat` —— 自然语言入口（与按钮版并行）
+- [x] 简易意图识别（`nlu/`，规则优先）：复习/问答/分析/导入/退出 等 8 类
+- [x] 复习语境消歧 + 复习中可插话提问
+- [x] 轻量问答（混合检索 + grounded 回答）
+- [x] 意图识别单测（`tests/`）
+
 ### 后续想法
 
 - 多文档混合复习
 - 遗忘曲线间隔重复
-- V2 版本：意图识别 + 自然语言对话 + 多 Agent 编排（详见 [ROADMAP](docs/ROADMAP.md)）
+- V1.2 架构重构 · 子 Agent 化（见 [issue](https://github.com/qi-wutu/StudyForge/issues/1)）
+- V1.3 LLM 辅助意图识别（见 [issue](https://github.com/qi-wutu/StudyForge/issues/2)）
+- V2：LangGraph supervisor 多 Agent 编排（详见 [ROADMAP](docs/ROADMAP.md)）
