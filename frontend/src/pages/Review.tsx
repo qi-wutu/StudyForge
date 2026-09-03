@@ -94,6 +94,15 @@ function ReviewStart({
         <button className="btn btn-primary btn-lg" onClick={onStart}>
           开始复习
         </button>
+        <div
+          style={{
+            marginTop: 12,
+            fontSize: 13,
+            color: "var(--text-secondary)",
+          }}
+        >
+          想用聊天的方式练？去 <a href="#/chat">对话</a> 直接说「开始复习」即可
+        </div>
       </div>
     </div>
   );

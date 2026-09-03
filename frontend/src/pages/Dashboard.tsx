@@ -55,12 +55,18 @@ export default function Dashboard() {
 
       <div className="card">
         <div className="card-title">当前会话：{sessionName}</div>
+        <div style={{ marginTop: 6, fontSize: 13, color: "var(--text-secondary)" }}>
+          想边聊边学？在「对话」里说「开始复习 / 什么是 GMP / 我哪里薄弱」都会自动分发
+        </div>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 }}>
-          <a href="#/import" className="btn btn-primary">
-            导入资料
+          <a href="#/chat" className="btn btn-primary">
+            💬 开始对话
           </a>
           <a href="#/review" className="btn btn-success">
             开始复习
+          </a>
+          <a href="#/import" className="btn">
+            导入资料
           </a>
           <a href="#/analysis" className="btn">
             薄弱分析
@@ -81,10 +87,10 @@ export default function Dashboard() {
             <strong>导入资料</strong> — 上传 Markdown 文件或粘贴内容，AI 自动提取知识点
           </li>
           <li>
-            <strong>开始复习</strong> — AI 出题，你回答，AI 评分 + 指出薄弱点
+            <strong>自然语言交流</strong> — 去「对话」说「开始复习」「什么是 GMP」，系统自动分发到复习/问答
           </li>
           <li>
-            <strong>查看分析</strong> — 薄弱分析报告告诉你哪里最需要加强
+            <strong>查看分析</strong> — 在「对话」说「我哪里薄弱」，或到「分析」页看报告
           </li>
         </ol>
       </div>
