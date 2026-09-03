@@ -60,31 +60,33 @@ StudyForge/
 │   ├── main.py             # FastAPI app 定义 + CORS + 静态文件挂载
 │   └── router.py           # API 路由（只做 HTTP 解析，不碰业务）
 │
-├── service/                # 业务逻辑层（Service）
+├── agent/                  # Agent 层（V1.2 起）
+│   ├── supervisor.py       # 主 Agent：意图识别 → 分发到各子 Agent
+│   ├── review_agent.py     # 复习子 Agent（LangGraph：调度/出题/判分 + turn API）
+│   ├── import_agent.py     # 导入子 Agent（提取知识点 + 去重 + embedding）
+│   ├── qa_agent.py         # 问答子 Agent（混合检索 + grounded 回答）
+│   ├── analyzer.py         # 分析子 Agent（统计 + LLM 报告）
+│   └── state.py            # Agent 状态定义
+│
+├── core/                   # 跨 Agent 共享底座
+│   └── llm.py              # get_llm() 单例 + react_json() 轻量 ReAct
+│
+├── service/                # 无状态数据/读服务（Session CRUD + 统计缓存）
 │   ├── session_service.py  # 会话 CRUD + session_id 解析
-│   ├── import_service.py   # 资料导入：调 import_graph 提取知识点
-│   ├── review_service.py   # 复习管理：驱动 review_graph 暂停/恢复
-│   ├── stats_service.py    # 统计分析：Dashboard、知识点列表、薄弱分析
-│   ├── chat_service.py     # 对话分发（V1.1）：意图 → 调各子能力
-│   └── qa_service.py       # 知识问答（V1.1）：混合检索 + grounded 回答
+│   └── stats_service.py    # 统计分析：Dashboard、知识点列表、薄弱分析（缓存）
 │
 ├── nlu/                    # 自然语言理解（V1.1）
 │   └── intent.py           # 简易意图识别（规则优先，8 类 intent）
 │
-├── graph/                  # LangGraph 核心
-│   ├── state.py            # Agent 状态定义
-│   ├── node.py             # 节点函数（调度/出题/判题/提取知识点）
-│   ├── graph.py            # 图定义（节点连线 + 条件边）
-│   └── analyzer.py         # 薄弱分析（统计 + LLM 报告）
-│
-├── tools/                  # 工具箱
+├── tools/                  # 工具箱（子 Agent 的 ReAct 搜索工具）
 │   ├── engine.py           # 搜索引擎（DuckDuckGo → Bing 双引擎后备）
 │   └── tools.py            # LangChain Tool + ReAct 循环
 │
 ├── rag/                    # 混合检索（BM25 + 向量）
 │   ├── bm25.py             # BM25 索引（手写，jieba 分词）
 │   ├── hybrid.py           # Hybrid Search（BM25 0.7 + 向量 0.3 加权融合）
-│   └── vector.py           # 向量索引（bge-small-zh-v1.5, 512维）
+│   ├── vector.py           # 向量索引（bge-small-zh-v1.5, 512维）
+│   └── retriever.py        # 会话检索器（带缓存，review/import/qa 共用）
 │
 ├── storage/                # MySQL 存储
 │   ├── db.py               # 引擎 + scoped_session + 迁移
@@ -129,29 +131,29 @@ StudyForge/
 
 ## 架构
 
-### 三层架构
+### 分层架构
 
 ```
 ┌───────────────────────────────────────────────┐
 │  backend/router.py          ← HTTP 层         │
 │  只做：解析请求参数 + 返回 JSON                   │
-│  不碰：LangGraph、DB、业务逻辑                    │
+│  不碰：Agent、DB、业务逻辑                       │
 └──────────────────────┬────────────────────────┘
                        ↓ 调用
 ┌───────────────────────────────────────────────┐
-│  service/*                    ← 业务逻辑层      │
-│  session_service / import_service              │
-│  review_service / stats_service                │
-│  封装：LangGraph 图驱动、状态管理、数据分析        │
-└──────────────────────┬────────────────────────┘
-                       ↓ 调用
-┌───────────────────────────────────────────────┐
-│  graph/    │  rag/     │  storage/            │
-│  tools/    │           │                      │
-│  ← LangGraph 核心                               │
-│  ← 混合检索 (BM25+向量)                         │
-│  ← MySQL + SQLAlchemy ORM                      │
-└───────────────────────────────────────────────┘
+│  agent/                      ← Agent 层       │
+│  supervisor 主 Agent → 分发到子 Agent          │
+│  review_agent / import_agent / qa_agent        │
+│  analyzer（LangGraph + turn API + 意图路由）    │
+└──────────────┬─────────────────────┬──────────┘
+               ↓ 复用底座              ↓ 无状态读服务
+┌──────────────────────────┐   ┌─────────────────────────┐
+│ core/  │ rag/  │ storage/│   │ service/（session/stats）│
+│ tools/                    │   │  数据分析缓存            │
+│ ← 通用 LLM + ReAct         │   └─────────────────────────┘
+│ ← 混合检索 (BM25+向量)     │
+│ ← MySQL + SQLAlchemy ORM  │
+└──────────────────────────┘
 ```
 
 ### 复习流程
@@ -346,10 +348,17 @@ python-dotenv
 - [x] 轻量问答（混合检索 + grounded 回答）
 - [x] 意图识别单测（`tests/`）
 
+### V1.2（架构重构 · 子 Agent 化）
+
+- [x] 4 个专职子 Agent（review / import / qa / analyzer）独立成模块、接口可调用
+- [x] 主 Agent `Supervisor`（agent/supervisor.py）：意图 → 分发
+- [x] 拆掉上帝模块 `graph/node.py` → `core/llm.py` + `rag/retriever.py`
+- [x] `graph/` 目录删除；service 收敛为 session/stats 无状态读服务
+- [x] 复习 LangGraph + interrupt 原样保留（迁入 ReviewAgent），行为零回归
+
 ### 后续想法
 
 - 多文档混合复习
 - 遗忘曲线间隔重复
-- V1.2 架构重构 · 子 Agent 化（见 [issue](https://github.com/qi-wutu/StudyForge/issues/1)）
 - V1.3 LLM 辅助意图识别（见 [issue](https://github.com/qi-wutu/StudyForge/issues/2)）
 - V2：LangGraph supervisor 多 Agent 编排（详见 [ROADMAP](docs/ROADMAP.md)）

@@ -34,10 +34,24 @@
 - **对话框**（前端 Chat 页 + `POST /api/chat`）——自然语言入口，和按钮版页面并行
 - **简易意图识别**（`nlu/`，规则优先）——8 类 intent：`exit_review / start_review / next / analyze / import / qa / answer / smalltalk`
 - **复习语境消歧**——复习进行中，非命令的普通输入视为作答；明显提问则插话走问答
-- **轻量问答子能力**（`qa_service`）——"什么是 GMP 模型" → 混合检索已有资料 → grounded 回答
+- **轻量问答子能力**（`qa_agent`）——"什么是 GMP 模型" → 混合检索已有资料 → grounded 回答
 - 现有功能端点 / 复习图 / 存储全部复用，V1 核心零改动
 
-一句话：V1.1 是"聊天就能学"的**入口立起来**——识别几种意图、能把复习/问答/分析/导入用自然语言分发起来；但协调层仍是 `chat_service` 规则分发，**还不是真正的一张 LangGraph supervisor 图**（见 V2 规划）。
+### V1.2（本阶段）— 架构重构 · 子 Agent 化
+
+把代码结构从"图 + service"重构成"**主 Agent 调度多个子 Agent**"，让架构长成能讲的多 Agent 故事：
+
+- **4 个专职子 Agent** 各自独立成模块、接口可调用：
+  - `agent/review_agent.py`（复习：LangGraph 调度/出题/判分 + `start/answer/next/exit` turn API）
+  - `agent/import_agent.py`（导入：提取知识点 + BM25 去重 + embedding）
+  - `agent/qa_agent.py`（问答：混合检索 + grounded 回答）
+  - `agent/analyzer.py`（分析：统计 + LLM 报告）
+- **主 Agent `agent/supervisor.py`**：识别意图 → 分发给上述子 Agent
+- **拆掉上帝模块** `graph/node.py`：`get_llm()`/ReAct → `core/llm.py`，检索缓存 → `rag/retriever.py`；`graph/` 目录删除
+- 复习图（LangGraph + interrupt + checkpointer）**原样保留**，只是迁进 ReviewAgent 内部；行为零回归（supervisor 分发冒烟结果与 V1.1 完全一致）
+- service 层收敛为无状态读服务（session / stats）；所有 API 端点路径不变，前端零改动
+
+一句话：V1.2 让"几个 Agent、各自干嘛"从纸面叙事变成**真代码结构**。但 supervisor 目前仍是 `if/else` 规则分发（supervisor 的"功能等同体"），**还不是真正的一张 LangGraph 主图**（interrupt 上移到主图边界，是 V2 核心）。
 
 ### V1 现在的交互方式
 
@@ -112,7 +126,12 @@ LLM 在其中扮演的是**单点认知角色**——在出题、判分、提知
 3. **多 Agent 编排**：引入主图调度多个子图，Agent 职责清晰化。
 4. **体验优化**（可与 2 并行）：复习改成"出一题 → 答一题 → 判一题 → 回到对话"，而不是一次跑完整个图。
 
-**V1.1 已把 1–2 用"规则版"跑了第一遍**：`nlu/` 单轮意图 + `chat_service` 对话分发，复习/问答/导入/分析都能用自然语言触达。缺的是把"对话分发"升级成**真正的 supervisor 图**（interrupt 上移到主图边界、子 Agent 独立可调用），以及用 **LLM 辅助意图识别**（规则快路 + LLM 兜底）拿结构化 `{intent, params}`——这两块分别在 **V1.2（架构重构 · 子 Agent 化）** 和 **V1.3（LLM 意图识别）** 落地。
+**进度：**
+- ✅ **V1.1** — 已把 1–2 用"规则版"跑通：`nlu/` 单轮意图 + 对话分发，复习/问答/导入/分析都能用自然语言触达。
+- ✅ **V1.2** — 子 Agent 化：4 个专职子 Agent + supervisor 独立成模块，拆掉上帝模块 `graph/node.py`，`get_llm()`/ReAct/检索缓存落到 `core/` 与 `rag/retriever.py`。
+- ⏳ **剩余差距**：(a) 把"规则 if/else 分发"升级成**真正的 LangGraph supervisor 图**（interrupt 上移到主图边界）→ V2 核心；(b) **LLM 辅助意图识别**（规则快路 + LLM 兜底）拿结构化 `{intent, params}` → **V1.3**。
+
+> V1.3 见 [issue #2](https://github.com/qi-wutu/StudyForge/issues/2)。
 
 V1 的存储（MySQL）、混合检索（BM25+向量）、判分、双车道调度、Agent Memory 全部**原样复用**，V2 是加一个"听得懂话"的皮层，不重造核心。
 

@@ -8,9 +8,10 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-from service import session_service, import_service, stats_service
-from service.chat_service import chat_service
-from service.review_service import review_service
+from service import session_service, stats_service
+from agent.import_agent import import_content
+from agent.review_agent import review_agent
+from agent.supervisor import supervisor
 
 router = APIRouter()
 
@@ -81,7 +82,7 @@ def switch_session(session_id: int):
     try:
         info = session_service.get_session(session_id)
         # 后台静默预生成题目，不阻塞切换
-        review_service.prewarm(session_id)
+        review_agent.prewarm(session_id)
         return info
     except ValueError as e:
         raise HTTPException(404, str(e))
@@ -101,7 +102,7 @@ def import_document(req: ImportRequest, session_id: Optional[int] = Query(None))
     """粘贴文本导入，AI 提取知识点"""
     sid = session_service.resolve_session_id(session_id)
     title = req.title or "未命名文档"
-    return import_service.import_content(sid, req.content, title)
+    return import_content(sid, req.content, title)
 
 
 @router.post("/api/import/file")
@@ -110,7 +111,7 @@ async def import_file(file: UploadFile, session_id: Optional[int] = Query(None))
     sid = session_service.resolve_session_id(session_id)
     content = (await file.read()).decode("utf-8")
     title = file.filename or "未命名文档"
-    return import_service.import_content(sid, content, title)
+    return import_content(sid, content, title)
 
 
 # ========================================
@@ -157,7 +158,7 @@ def start_review(session_id: Optional[int] = Query(None)):
     """开始一次复习——出第一道题"""
     sid = session_service.resolve_session_id(session_id)
     try:
-        return review_service.start(sid)
+        return review_agent.start(sid)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -165,14 +166,14 @@ def start_review(session_id: Optional[int] = Query(None)):
 @router.post("/api/review/{thread_id}/answer")
 def submit_answer(thread_id: str, req: AnswerRequest):
     """提交回答 → AI 判分 → 返回评价"""
-    return review_service.submit_answer(thread_id, req.answer)
+    return review_agent.submit_answer(thread_id, req.answer)
 
 
 @router.get("/api/review/{thread_id}/next")
 def get_next_question(thread_id: str):
     """获取当前 thread 的下一题（不跑图，只读缓存状态）"""
     try:
-        return review_service.get_next(thread_id)
+        return review_agent.get_next(thread_id)
     except ValueError as e:
         msg = str(e)
         raise HTTPException(404 if "已过期" in msg else 400, msg)
@@ -181,20 +182,20 @@ def get_next_question(thread_id: str):
 @router.post("/api/review/{thread_id}/exit")
 def exit_review(thread_id: str):
     """主动结束复习"""
-    return review_service.exit(thread_id)
+    return review_agent.exit(thread_id)
 
 
 @router.get("/api/review/active")
 def list_active_reviews():
     """查看当前正在进行的复习会话"""
-    return {"active": review_service.list_active()}
+    return {"active": review_agent.list_active()}
 
 
 # ========================================
 # 自然语言对话（V1.1 入口）
 #
 # 把「自然语言输入 → 意图识别 → 分发」做成一个入口。
-# 内部复用 review_service / stats_service / import_service + 轻量 qa。
+# Supervisor 内部调度 复习/问答/导入/分析 四个子 Agent（agent/）。
 # 现有各功能端点保留，后续可用对话逐步替代（见 ROADMAP）。
 # ========================================
 
@@ -202,7 +203,7 @@ def list_active_reviews():
 def chat(req: ChatRequest, session_id: Optional[int] = Query(None)):
     """自然语言交流入口——识别意图并分发到对应能力"""
     sid = session_service.resolve_session_id(session_id)
-    return chat_service.chat(sid, req.message)
+    return supervisor.chat(sid, req.message)
 
 
 # ========================================

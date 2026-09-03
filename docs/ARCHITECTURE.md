@@ -1,7 +1,29 @@
 # StudyForge 架构文档
 
 > 版本：2.0（Web 版）  
-> 最后更新：2026-07-28
+> 最后更新：2026-09-03
+
+---
+
+## ⚠️ V1.2 结构变更（2026-09-03）— 先读这里
+
+V1.2 把架构从"图 + service"重构成"**主 Agent 调度多个子 Agent**"，但本文档的节点级讲解仍然准确（机制没变，只是**文件搬了家**）。旧路径 → 新位置对照：
+
+| 旧 | 新 |
+| --- | --- |
+| `graph/node.py`（scheduler / question_gen / judge / planner 等节点） | `agent/review_agent.py`、`agent/import_agent.py` |
+| `graph/graph.py`（import_graph / review_graph） | 各自并入 `agent/import_agent.py`、`agent/review_agent.py`（LangGraph 原样保留） |
+| `graph/state.py`（AgentState） | `agent/state.py` |
+| `graph/analyzer.py` | `agent/analyzer.py` |
+| `service/review_service.py`（turn API） | `agent/review_agent.py` 的 `ReviewAgent` |
+| `service/import_service.py` | `agent/import_agent.py` 的 `import_content()` |
+| `service/qa_service.py`（V1.1） | `agent/qa_agent.py` 的 `answer_question()` |
+| `service/chat_service.py`（V1.1 分发） | `agent/supervisor.py` 的 `Supervisor` |
+| node.py 里 `get_llm()` / ReAct | `core/llm.py` |
+| node.py 里检索缓存 | `rag/retriever.py` |
+| `service/session_service.py` / `stats_service.py` | 保留（无状态读服务 + 缓存） |
+
+> 一句话：**本文档下文凡提到 `graph/node.py`、`graph/graph.py`、`review_service`、`import_service` 的地方，请按上表映射到 agent/ 对应文件**。本文是机制讲解，不改写以免失真。
 
 ---
 

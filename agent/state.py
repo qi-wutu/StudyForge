@@ -1,19 +1,20 @@
-"""Agent 状态定义
+"""Agent 状态定义（V1 原 graph/state.py 迁入）
 
 LangGraph 的核心概念之一：State（状态）。
-State 是"节点之间传数据的格式"，类似 Go 里的 struct 或前端的 store。
+State 是"节点之间传数据的格式"。
 
 每个节点可以：
   - 读 state：state["xxx"]
   - 写 state：return {"xxx": value}  （LangGraph 自动合并回 state）
 
-注意：
-  messages 用了 add_messages 这个 reducer（而不是直接覆盖）。
-  这意味着每次往 messages 加新消息，历史消息不会丢。
-  但目前项目没有用多轮对话，messages 字段是预留的。
+messages 用了 add_messages reducer（而不是直接覆盖），
+这意味着每次往 messages 加新消息，历史消息不会丢。
+目前单 Agent 流程还没用多轮对话，messages 字段是预留的；
+等 supervisor 主图做成多轮时就会用到。
 """
 
 from typing import Annotated, Sequence, TypedDict
+
 from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 

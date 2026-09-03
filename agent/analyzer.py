@@ -1,19 +1,18 @@
-"""薄弱分析模块
+"""分析 Agent — 薄弱分析
 
-从 review_records 读取答题记录，分析薄弱知识点：
+职责：从 review_records 读取答题记录，分析薄弱知识点：
   1. 按 KP 分组统计（平均分、次数、趋势）
   2. 全局 weakness / missing_kps 高频统计
-  3. LLM 生成自然语言薄弱分析报告
+  3. LLM 生成自然语言薄弱分析报告（core.llm）
 
-后续（第二层）：BM25 薄弱扩散 → 调度器优先出题
+对应 V1 原 graph/analyzer.py（数据层在 service/stats_service.py 做缓存）。
 """
 
 from collections import Counter
-from typing import Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from graph.node import get_llm
+from core.llm import get_llm
 from storage.db import db
 from storage.schemas import KnowledgePoint, ReviewRecord
 
@@ -135,7 +134,7 @@ def generate_llm_report(
     global_stats: dict,
     kp_map: dict[int, dict],
 ) -> str:
-    """调 DeepSeek 生成自然语言薄弱分析报告"""
+    """调 LLM 生成自然语言薄弱分析报告"""
     if not kp_stats:
         return "暂无答题记录，无法生成分析报告。"
 
@@ -185,8 +184,41 @@ def generate_llm_report(
 # 四、入口函数
 # ========================================
 
+def analyze(session_id: int, llm_report: bool = True) -> dict:
+    """执行薄弱分析
+
+    Args:
+        session_id: 会话 ID
+        llm_report: 是否调 LLM 生成自然语言报告
+
+    Returns:
+        { kp_stats, global_stats, llm_report(可选) }
+    """
+    records = get_review_records(session_id)
+    if not records:
+        return {"error": "暂无答题记录"}
+
+    kp_map = get_kp_map(session_id)
+    kp_stats = compute_kp_stats(records)
+    global_stats = aggregate_global(records)
+
+    # 给 kp_stats 补上 title
+    for s in kp_stats:
+        s["title"] = kp_map.get(s["kp_id"], {}).get("title", f"KP#{s['kp_id']}")
+
+    result = {
+        "kp_stats": kp_stats,
+        "global_stats": global_stats,
+    }
+
+    if llm_report:
+        result["llm_report"] = generate_llm_report(kp_stats, global_stats, kp_map)
+
+    return result
+
+
 # ========================================
-# 五、CLI 展示
+# 五、CLI 展示（benchmark/调试用）
 # ========================================
 
 def display_analysis(result: dict):
@@ -257,36 +289,3 @@ def display_analysis(result: dict):
         print(f"{'=' * 50}")
         print(result["llm_report"])
     print()
-
-
-def analyze(session_id: int, llm_report: bool = True) -> dict:
-    """执行薄弱分析
-
-    Args:
-        session_id: 会话 ID
-        llm_report: 是否调 LLM 生成自然语言报告
-
-    Returns:
-        { kp_stats, global_stats, llm_report(可选) }
-    """
-    records = get_review_records(session_id)
-    if not records:
-        return {"error": "暂无答题记录"}
-
-    kp_map = get_kp_map(session_id)
-    kp_stats = compute_kp_stats(records)
-    global_stats = aggregate_global(records)
-
-    # 给 kp_stats 补上 title
-    for s in kp_stats:
-        s["title"] = kp_map.get(s["kp_id"], {}).get("title", f"KP#{s['kp_id']}")
-
-    result = {
-        "kp_stats": kp_stats,
-        "global_stats": global_stats,
-    }
-
-    if llm_report:
-        result["llm_report"] = generate_llm_report(kp_stats, global_stats, kp_map)
-
-    return result

@@ -1,19 +1,22 @@
-"""知识问答 — 基于已有知识点的检索 + 回答
+"""问答子 Agent — QAAgent
 
-V1.1 新增的轻量「问答子 Agent」能力：用户在对话里问「什么是 GMP 模型」，
-直接从该会话的知识点里检索相关内容，让 LLM 基于检索到的资料回答（grounded，不瞎编）。
+职责：用户用自然语言问知识点（"什么是 GMP 模型"），
+从该会话的知识点里检索相关内容，让 LLM 基于检索到的资料回答（grounded，不瞎编）。
+必要信息不足时可引导用户导入资料（暂不主动上网搜——那留给 V1.3 增强）。
 
-复用 V1 的混合检索（_get_retriever），不碰任何图。
+复用：混合检索（rag.retriever.get_session_retriever）+ 通用 LLM（core.llm）。
+对应 V1.1 的 service/qa_service.py。
 """
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from graph.node import _get_retriever, get_llm
+from core.llm import get_llm
+from rag.retriever import get_session_retriever
 from storage.db import db
 from storage.schemas import KnowledgePoint
 
 
-def qa_answer(session_id: int, question: str) -> tuple[str, bool]:
+def answer_question(session_id: int, question: str) -> tuple[str, bool]:
     """回答一个知识问题。
 
     Returns:
@@ -25,7 +28,7 @@ def qa_answer(session_id: int, question: str) -> tuple[str, bool]:
     if kps == 0:
         return "这个会话还没导入资料，我暂时没法基于你的资料回答。你可以先导入，或者告诉我你想学/测什么。", False
 
-    retriever = _get_retriever(session_id)
+    retriever = get_session_retriever(session_id)
     results = retriever.search(question, top_k=4)
 
     # 过滤掉低相关片段

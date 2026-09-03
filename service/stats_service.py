@@ -16,7 +16,7 @@ import time
 
 from sqlalchemy import func
 
-from graph.analyzer import analyze as _run_analyze
+from agent.analyzer import analyze as _run_analyze
 from storage.db import db
 from storage.schemas import Document, KnowledgePoint, ReviewRecord, Session
 
@@ -144,7 +144,7 @@ def _clear_caches(session_id: int):
 
 
 def analyze(session_id: int, llm_report: bool = True) -> dict:
-    """薄弱分析 — 委托给 graph.analyzer
+    """薄弱分析 — 委托给 agent.analyzer
 
     Args:
         session_id: 当前会话 ID
