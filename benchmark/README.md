@@ -159,7 +159,7 @@ python benchmark/run.py --cases databases
 ## 注意事项
 
 1. 运行前在 `.env` 中配置 `LLM_API_KEY`
-2. 评测脚本**完全不 import 主项目**（`config.py`、`graph/`、`storage/`等），只读 `.env`
+2. 评测脚本**不 import 业务模块**（`config.py`、`storage/` 等），只读 `.env`
 3. 一致性样本用 `temperature=0.3` 制造波动，准确性样本用 `temperature=0` 保证确定
 4. 报告自动保存到 `benchmark/reports/` 目录
 5. 全量跑 93 题 × 1 次 ≈ 93 次 API 调用；加 --multi 10 --runs 5 ≈ 93+40=133 次

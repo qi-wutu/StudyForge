@@ -1,29 +1,38 @@
 # StudyForge 架构文档
 
-> 版本：2.0（Web 版）  
+> 版本：2.1（V1.2 子 Agent 化 · Web 版）  
 > 最后更新：2026-09-03
 
 ---
 
-## ⚠️ V1.2 结构变更（2026-09-03）— 先读这里
+## 架构现状一句话（V1.2）
 
-V1.2 把架构从"图 + service"重构成"**主 Agent 调度多个子 Agent**"，但本文档的节点级讲解仍然准确（机制没变，只是**文件搬了家**）。旧路径 → 新位置对照：
+V1.2 把代码结构从「图 + service」重构成「**主 Agent 调度多个子 Agent**」。底层机制**没变**——LangGraph 复习循环图、混合检索、LLM 判分、Agent Memory 全部原样保留，只是文件重新归位、职责重新切分：
 
-| 旧 | 新 |
-| --- | --- |
-| `graph/node.py`（scheduler / question_gen / judge / planner 等节点） | `agent/review_agent.py`、`agent/import_agent.py` |
-| `graph/graph.py`（import_graph / review_graph） | 各自并入 `agent/import_agent.py`、`agent/review_agent.py`（LangGraph 原样保留） |
-| `graph/state.py`（AgentState） | `agent/state.py` |
-| `graph/analyzer.py` | `agent/analyzer.py` |
-| `service/review_service.py`（turn API） | `agent/review_agent.py` 的 `ReviewAgent` |
-| `service/import_service.py` | `agent/import_agent.py` 的 `import_content()` |
-| `service/qa_service.py`（V1.1） | `agent/qa_agent.py` 的 `answer_question()` |
-| `service/chat_service.py`（V1.1 分发） | `agent/supervisor.py` 的 `Supervisor` |
-| node.py 里 `get_llm()` / ReAct | `core/llm.py` |
-| node.py 里检索缓存 | `rag/retriever.py` |
-| `service/session_service.py` / `stats_service.py` | 保留（无状态读服务 + 缓存） |
+```
+HTTP 层   backend/router.py
+   │  只做 HTTP 解析 + JSON 返回，不碰业务
+   ▼
+Agent 层  agent/
+   supervisor（主 Agent：意图识别 → 分发到子 Agent）
+   ├─ review_agent   复习子 Agent（LangGraph 循环图 + start/answer/next/exit turn API）
+   ├─ import_agent   导入子 Agent（planner 一次性图）
+   ├─ qa_agent       问答子 Agent（混合检索 + grounded 回答）
+   └─ analyzer       分析子 Agent（统计聚合 + LLM 报告）
+   ▲ 意图皮层 nlu/intent.py（规则优先，8 类 intent）
+   │
+   ▼ 复用底座
+service/（session/stats 无状态读服务 + 缓存）
+core/（LLM + ReAct） rag/（BM25 + 向量） tools/（搜索） storage/（MySQL）
+```
 
-> 一句话：**本文档下文凡提到 `graph/node.py`、`graph/graph.py`、`review_service`、`import_service` 的地方，请按上表映射到 agent/ 对应文件**。本文是机制讲解，不改写以免失真。
+下文凡是讲图节点机制（scheduler / question_gen / judge / planner）的地方，都以 `agent/` 下的实现为准：
+
+- 复习循环图定义在 `agent/review_agent.py` 的 `_build_review_graph()`
+- 导入一次性图在 `agent/import_agent.py`
+- 图共享状态 `AgentState` 在 `agent/state.py`
+
+> 演进叙事：V1.2 之前是「图 + service」两层；V1.2 之后长成了能讲的多 Agent 故事——每个子 Agent 独立成模块、接口可单独调用，顶层 `supervisor` 负责调度。supervisor 目前仍是**规则分发**（if/else），把它升级成一张真正的 LangGraph 主图（interrupt 上移到主图边界）是 V2 的核心（见第 12 节）。
 
 ---
 
@@ -31,10 +40,11 @@ V1.2 把架构从"图 + service"重构成"**主 Agent 调度多个子 Agent**"�
 
 1. [项目定位](#1-项目定位)
 2. [整体架构概览](#2-整体架构概览)
-3. [三层架构详解](#3-三层架构详解)
+3. [分层架构详解](#3-分层架构详解)
    - 3.1 [Controller 层（backend/）](#31-controller-层-backend)
-   - 3.2 [Service 层（service/）](#32-service-层-service)
-   - 3.3 [Data 层（graph/ + rag/ + storage/ + tools/）](#33-data-层)
+   - 3.2 [Agent 层（agent/）](#32-agent-层-agent)
+   - 3.3 [Service 层（service/）](#33-service-层-service)
+   - 3.4 [底座层（core/ rag/ tools/ storage/）](#34-底座层core-rag-tools-storage)
 4. [数据流详解](#4-数据流详解)
    - 4.1 [导入流程](#41-导入流程)
    - 4.2 [复习流程](#42-复习流程)
@@ -77,59 +87,58 @@ StudyForge 是一个 **AI 自适应复习系统**，核心业务流程是：
 ## 2. 整体架构概览
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                       用户浏览器                                    │
-│  React 19 + TypeScript + Vite                                      │
-│  单页应用（HashRouter），组件化状态管理                               │
-└──────────────────────────┬──────────────────────────────────────────┘
-                           │ HTTP / JSON
-                           ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│  FastAPI 服务（Python）                                              │
-│                                                                     │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │  Controller 层 ── backend/router.py                             │  │
-│  │  只做：解析 HTTP 参数 → 调 service → 返回 JSON                  │  │
-│  │  不做：调 LangGraph、查数据库、管业务状态                         │  │
-│  └──────────────────────────┬────────────────────────────────────┘  │
-│                             │ 调用                                   │
-│  ┌──────────────────────────▼────────────────────────────────────┐  │
-│  │  Service 层 ── service/                                       │  │
-│  │                                                                │  │
-│  │  session_service  import_service  review_service  stats_service│  │
-│  │  封装：LangGraph 驱动、状态管理、缓存、数据分析                  │  │
-│  └───────┬──────────┬──────────┬──────────┬──────────────────────┘  │
-│          │          │          │          │                         │
-│          ▼          ▼          ▼          ▼                         │
-│  ┌───────────────────────────────────────────────────────────────┐  │
-│  │  Data 层                                                      │  │
-│  │                                                                │  │
-│  │  graph/ ── LangGraph 节点 + 图定义 + 分析器                    │  │
-│  │  rag/   ── BM25 + 向量混合检索                                 │  │
-│  │  tools/ ── 搜索工具（DuckDuckGo + Bing） + ReAct 循环           │  │
-│  │  storage/ ── MySQL + SQLAlchemy ORM                             │  │
-│  └───────────────────────────────────────────────────────────────┘  │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-           │                   │
-           ▼                   ▼
-     ┌──────────┐      ┌──────────────┐
-     │  MySQL   │      │  DeepSeek    │
-     │  6 张表  │      │  API         │
-     └──────────┘      └──────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                    用户浏览器（React 19 + TS + Vite）                  │
+│  Dashboard / 对话 / 会话 / 导入 / 复习 / 分析                          │
+└───────────────────────────────┬──────────────────────────────────────┘
+                                │ HTTP / JSON（?session_id=X）
+                                ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ FastAPI（Python）                                                     │
+│                                                                       │
+│  ┌─────────────────────────────────────────────────────────────────┐  │
+│  │ Controller 层  backend/router.py                                 │  │
+│  │   只做：解析参数 → 调 agent/service → 返回 JSON                  │  │
+│  └──────────────────────────────┬──────────────────────────────────┘  │
+│                                 ▼                                    │
+│  ┌─────────────────────────────────────────────────────────────────┐  │
+│  │ Agent 层  agent/  （+ nlu/ 意图识别）                             │  │
+│  │   supervisor  主 Agent：识别意图 → 分发                           │  │
+│  │   ├─ review_agent   复习图（LangGraph + interrupt + turn API）    │  │
+│  │   ├─ import_agent   导入图（planner，提取知识点）                  │  │
+│  │   ├─ qa_agent       问答（混合检索 + grounded 回答）              │  │
+│  │   └─ analyzer       薄弱分析（统计聚合 + LLM 报告）               │  │
+│  └──────────────┬──────────────────────┬────────────────────────────┘  │
+│                 │ 复用底座               │ 无状态读服务                 │
+│  ┌────────────────────────────┐   ┌───────────────────────────────┐   │
+│  │ core/  llm.py（get_llm +   │   │ service/                       │   │
+│  │        react_json 轻量ReAct）│   │  session_service（会话 CRUD）  │   │
+│  │ rag/   BM25 + 向量混合检索  │   │  stats_service（Dashboard /    │   │
+│  │ tools/ 搜索（DDG + Bing）   │   │  知识点统计 / 薄弱分析，缓存）  │   │
+│  │ storage/ MySQL + ORM（6表） │   └───────────────────────────────┘   │
+│  └────────────────────────────┘                                      │
+│                                                                       │
+└──────────────────────────────────────────────────────────────────────┘
+          │                         │
+          ▼                         ▼
+   ┌────────────┐          ┌──────────────────┐
+   │   MySQL    │          │  DeepSeek API    │
+   │   6 张表   │          │（OpenAI 兼容）    │
+   └────────────┘          └──────────────────┘
 ```
 
 ### 设计原则
 
-1. **三层分离** — Controller 不碰业务，Service 不碰 HTTP，Data 层专注底层能力
-2. **图内/图外分离** — LangGraph 节点内只关注"该做什么事"，不关心 HTTP、不关心存储
-3. **隔离优先** — 会话（Session）间数据全隔离，没有跨会话引用
-4. **降级设计** — 向量检索失败 → 降级 BM25；搜索 API 失败 → 跳过搜索；embedding 失败 → 不阻塞导入
-5. **缓存不是必须的** — 所有缓存都是内存级，服务重启后重建，不会丢业务数据
+1. **分层分离** — Controller 不碰业务，Agent/Service 不碰 HTTP，底座专心管 LLM/检索/数据
+2. **职责收敛** — 每个子 Agent 只做一件事（复习 / 导入 / 问答 / 分析），接口可独立调用、独立测试
+3. **图内/图外分离** — LangGraph 节点内只关注"该做什么事"，不关心 HTTP、不关心存储
+4. **隔离优先** — 会话（Session）间数据全隔离，没有跨会话引用
+5. **降级设计** — 向量检索失败 → 降级 BM25；搜索 API 失败 → 跳过搜索；embedding 失败 → 不阻塞导入
+6. **缓存不是必须的** — 所有缓存都是内存级，服务重启后重建，不会丢业务数据
 
 ---
 
-## 3. 三层架构详解
+## 3. 分层架构详解
 
 ### 3.1 Controller 层（backend/）
 
@@ -143,7 +152,7 @@ app.include_router(router)               # API 路由
 app.mount("/", StaticFiles(...))         # 前端静态文件
 ```
 
-只有 39 行，不含任何业务逻辑。启动事件里调 `init_db()` 做建表和迁移。
+只有几十行，不含任何业务逻辑。启动事件里调 `init_db()` 做建表和迁移。
 
 #### backend/router.py
 
@@ -152,28 +161,152 @@ app.mount("/", StaticFiles(...))         # 前端静态文件
 @router.get("/api/stats")
 def get_stats(session_id: Optional[int] = Query(None)):
     sid = session_service.resolve_session_id(session_id)  # 1. 拿 session_id
-    return stats_service.get_dashboard_stats(sid)          # 2. 调 service
+    return stats_service.get_dashboard_stats(sid)          # 2. 调 service/agent
                                                            # 3. 返回（隐式 JSON）
 ```
 
+```python
+# 自然语言入口 → 主 Agent（V1.1）
+@router.post("/api/chat")
+def chat(req: ChatRequest, session_id: Optional[int] = Query(None)):
+    sid = session_service.resolve_session_id(session_id)
+    return supervisor.chat(sid, req.message)
+```
+
 - 不直接调 `db.query()`、不调 `graph.invoke()`
-- 不维护任何状态（`_active_reviews` 已经在 service 层）
+- 不维护任何状态（活跃复习 thread、对话记忆都在 Agent 层维护）
 - 异常统一转 HTTP 错误码
 - session_id 由前端 localStorage 持有，通过 `?session_id=X` 传过来
 
-**为什么不让 router 直接调 graph？**  
-为了可测试性。如果 router 里嵌了 LangGraph 调用，写单元测试就得 mock HTTP 请求。现在只需要测 service 方法就行。
+**为什么 router 不直接调图 / 节点？**  
+为了可测试性。如果 router 里嵌了 LangGraph 调用，写单元测试就得 mock HTTP 请求。现在只需要测 `review_agent.start()`、`supervisor.chat()`、`stats_service.analyze()` 这类公开方法就行。
 
 ---
 
-### 3.2 Service 层（service/）
+### 3.2 Agent 层（agent/）
+
+V1.2 之前，代码是「`graph/` 上帝模块 + 一堆 service」，负责调度的逻辑散落在 `router` 和 `chat_service` 里，讲不清"Agent"。V1.2 把能力按职责切分，**每个子 Agent 独立成模块**，由主 Agent `supervisor` 统一调度。
+
+| 文件 | 角色 | 职责 / 公开接口 |
+| --- | --- | --- |
+| `supervisor.py` | 主 Agent | `Supervisor.chat(session_id, message)`：意图识别 → 分发 → 返回结构化结果 |
+| `review_agent.py` | 复习子 Agent | LangGraph 循环图（调度/出题/判分）+ `ReviewAgent`：`start/answer/next/exit` |
+| `import_agent.py` | 导入子 Agent | `import_content(session_id, content, title)` → `{document_id, knowledge_points}` |
+| `qa_agent.py` | 问答子 Agent | `answer_question(session_id, question)` → `(text, has_context)` |
+| `analyzer.py` | 分析子 Agent | `analyze(session_id)` → `{kp_stats, global_stats, llm_report}` |
+| `state.py` | 共享类型 | `AgentState` TypedDict — 所有图的共享状态 |
+
+> 复习 / 导入仍用 LangGraph，只是**图定义和节点函数跟着对应 Agent 走**（`_build_review_graph()` / `import_agent` 的 planner 图），节点机制在第 7 节详述。`graph/` 目录已在 V1.2 删除。
+
+#### Supervisor：主 Agent
+
+```python
+class Supervisor:
+    """主 Agent：识别意图并把任务交给对应子 Agent"""
+
+    def chat(self, session_id: int, message: str) -> dict:
+        conv = self._get_conv(session_id)          # 每 session 一份对话记忆
+        intent = classify_intent(message, review_active=conv["pending_question"])
+        return self._dispatch(conv, intent, message)  # 按意图分发
+```
+
+`supervisor.chat()` 内部依次做三件事：
+
+1. **记录对话** — 每个 session 维护一个 `Conversation`：`messages` + `review_thread_id` + `pending_question`（是否有一道待回答的题）。
+2. **意图识别** — 调 `nlu/intent.py::classify_intent()`，传入 `review_active` 用于消歧。
+3. **分发** — 按意图把任务交给对应子 Agent，返回结构化结果给前端渲染。
+
+**意图 → 子 Agent 分发表：**
+
+| 用户说的话 | intent | 分发给 | 返回 type |
+| --- | --- | --- | --- |
+| 「退出 / 结束 / 不考了」 | `exit_review` | review_agent（退出当前复习） | `chat` |
+| 「开始复习 / 考我 / 出题」 | `start_review` | review_agent（`start`） | `question` |
+| 「下一题」 | `next` | 提示语（答完自动出下一题） | `chat` |
+| 「我哪里薄弱 / 分析一下」 | `analyze` | stats_service → analyzer | `analysis` |
+| 「导入：xxx」 | `import` | import_agent（`import_content`） | `imported` |
+| 「什么是 GMP？」（非复习时提问） | `qa` | qa_agent（`answer_question`） | `answer` |
+| （复习中）用户直接作答 | `answer` | review_agent（`submit_answer`） | `review_result` |
+| 其他闲聊 / 空输入 | `smalltalk` | 兜底引导文案 | `chat` |
+
+**复习中的消歧（关键设计）**：复习进行中（`pending_question=True`），用户发来的普通消息优先视为**当前题的回答**（`answer`），只有明显是提问的句子（以"什么是/怎么/为什么"开头或以问号结尾）才插话走 `qa`。
+
+> 局限（也是 V2 的入口）：当前 supervisor 是「规则 + if/else」分发，不是一张 LangGraph 主图。把分发升级成图（interrupt 上移到主图边界）就是 V2 的核心工作。
+
+#### nlu/ — 意图皮层
+
+```
+nlu/intent.py
+  classify_intent(message, review_active=False) -> intent
+    ├─ 正则强命令（无条件最高优先）
+    │    exit_review / start_review / next / analyze / import
+    ├─ 复习中：非命令、非提问 → answer
+    └─ 提问判定（问号结尾 / 疑问词开头）→ qa，否则 smalltalk
+```
+
+规则优先 = **零 LLM 调用、可预测、可单测**。8 类 intent 的判定全部收敛在 `tests/test_intent.py`（13 个用例）。V1.3 规划在"规则拿不准"时接 LLM 兜底，输出结构化 `{intent, params}`。
+
+#### ReviewAgent（复习子 Agent）详解
+
+复习图是一个**循环图**，通过 `interrupt()` 把一次复习拆到多次 HTTP 调用里分步执行。V1.2 之后由 `ReviewAgent` 封装这组 turn API：
+
+```python
+class ReviewAgent:
+    """复习 Agent — 管理每个 thread 的复习会话
+
+    复习图是循环图，靠 interrupt() 拆到多个 turn 里分步调用：
+
+    start():
+        → 生成 thread_id (uuid)
+        → review_graph.invoke(state, config)
+        → 图跑到 wait_input 的 interrupt() 暂停
+        → 返回第一题（thread_id, question, kp_title, ...）
+
+    submit_answer(thread_id, answer):
+        → Command(resume=answer) 唤醒图
+        → 继续：judge → scheduler → question_gen → wait_input
+        → 又暂停，返回评价 + 下一题
+
+    get_next(thread_id):
+        → review_graph.get_state(config)  # 不调 invoke，不跑图
+        → 从 checkpointer 读当前 state
+
+    exit(thread_id):
+        → Command(resume="__exit__")
+        → wait_input 看到 __exit__，设 exit_review=True，图正常结束
+    """
+```
+
+关键设计点：
+
+- **图内部**：节点函数（`scheduler` / `question_gen` / `wait_input` / `judge`）和 `_build_review_graph()` 都在 `review_agent.py` 内，LangGraph + MemorySaver checkpointer 原样保留。
+- **单例**：`review_agent = ReviewAgent()` 模块级实例化，所有请求共用——因为它要维护 `_active_reviews` 字典（thread_id → 会话状态）。
+- **thread_id**：每次 `start()` 生成 uuid 作为复习会话标识。未完成复习在内存里，服务重启后丢失，需要重新 start（一次复习通常几分钟，设计上接受）。
+- **预生成**：`prewarm(session_id)` 在切换会话时后台静默预生成题目，不阻塞用户操作。
+
+#### 为什么子 Agent 可以独立工作
+
+每个子 Agent 只依赖底座（core/rag/storage）或无状态 service，不依赖 HTTP 层：
+
+```text
+supervisor ──┬──► review_agent（→ rag.retriever / core.llm / stats_service._clear_caches）
+             ├──► import_agent（→ rag.bm25 / rag.retriever.invalidate / core.llm）
+             ├──► qa_agent    （→ rag.retriever / core.llm）
+             └──► analyzer    （→ core.llm / storage 查询）
+```
+
+将来接 V2（LangGraph 主图）时，每个子 Agent 的 turn 接口可以直接作为图上的节点或 Tool 复用，不用再搬家。
+
+---
+
+### 3.3 Service 层（service/）
+
+V1.2 之后 service 层收敛为**无状态读服务**：不带图、不带对话状态，只做查询 + 聚合 + 缓存。
 
 | 文件 | 职责 | 关键函数 |
 | --- | --- | --- |
 | `session_service.py` | 会话的 CRUD、ID 解析 | `resolve_session_id()`, `create_session()`, `list_sessions()` |
-| `import_service.py` | 资料导入 → 调 import_graph | `import_content(session_id, content, title)` |
-| `review_service.py` | 复习图的启动/恢复/退出 | `start()`, `submit_answer()`, `get_next()`, `exit()` |
-| `stats_service.py` | 统计查询 + 薄弱分析 + 缓存 | `get_dashboard_stats()`, `list_knowledge_points()`, `analyze()` |
+| `stats_service.py` | Dashboard / 知识点统计 / 薄弱分析 + 缓存 | `get_dashboard_stats()`, `list_knowledge_points()`, `analyze()` |
 
 #### session_service.py 详解
 
@@ -197,41 +330,6 @@ def resolve_session_id(session_id: int | None = None) -> int:
 3. **负载均衡友好** — 请求打到任何一台机器都能正确处理
 4. **前端更可控** — 切换会话只需改 localStorage，不发请求也可以
 
-#### review_service.py 详解
-
-```python
-class ReviewService:
-    """复习服务 — 管理每个 thread 的复习会话
-    
-    复习图是一个循环图，但被拆到多个 HTTP 端点里分步调用。
-    
-    start():
-        → 生成 thread_id (uuid)
-        → review_graph.invoke(state, config)
-        → 图跑到 wait_input 的 interrupt() 暂停
-        → 返回题目
-    
-    submit_answer(thread_id, answer):
-        → Command(resume=answer)
-        → 图被唤醒，继续：judge → scheduler → question_gen → wait_input
-        → 又暂停，返回评价 + 下一题
-    
-    get_next(thread_id):
-        → review_graph.get_state(config)  # 不调 invoke，不跑图
-        → 从 checkpointer 读当前 state
-    
-    exit(thread_id):
-        → Command(resume="__exit__")
-        → wait_input 看到 __exit__，设 exit_review=True，图正常结束
-    """
-```
-
-关键设计点：
-
-- **单例**：`review_service = ReviewService()` 在模块级别实例化，所有请求共用。因为要维护 `_active_reviews` 字典。
-- **thread_id**：每次 `start()` 生成一个 uuid，作为复习会话的唯一标识。存在内存里，服务重启后丢失。
-- **不持久化活跃复习**：如果有未完成的复习，服务重启后用户需要重新 start。在设计上接受了这个限制——一次复习通常只需要几分钟。
-
 #### stats_service.py 详解
 
 ```python
@@ -249,35 +347,37 @@ def _is_cache_valid(entry, session_id) -> bool:
     return True
 ```
 
-分析结果缓存 15 分钟。如果期间有新的答题记录（`max_record_id` 变化），立即重新计算。`submit_answer` 成功后会调 `_clear_caches(session_id)` 显式清除缓存。
+- 分析结果缓存 15 分钟。如果期间有新的答题记录（`max_record_id` 变化），立即重新计算。
+- `analyze()` 的数据聚合逻辑委托给 `agent/analyzer.py`（薄弱分析子 Agent），缓存仍留在 service 层。
+- `submit_answer` 成功后（review_agent 内部）会调 `_clear_caches(session_id)` 显式清除缓存。
 
 ---
 
-### 3.3 Data 层
+### 3.4 底座层（core/ rag/ tools/ storage/）
 
-#### graph/ — LangGraph 核心
+#### core/ — 跨 Agent 共享的 LLM 底座
 
 | 文件 | 内容 |
 | --- | --- |
-| `state.py` | `AgentState` TypedDict — 图中所有节点共享的数据结构 |
-| `node.py` | 5 个节点函数 + 条件边函数 + 辅助函数（LLM、检索、Memory） |
-| `graph.py` | `StateGraph` 编译 — import_graph（一次性）+ review_graph（循环） |
-| `analyzer.py` | 薄弱分析：聚合统计 + 去重 + LLM 报告生成 |
+| `llm.py` | `get_llm()`（ChatOpenAI 单例，.env 驱动）+ `react_json()`（轻量 ReAct 循环） |
+
+V1.2 把原来 `graph/node.py` 里的 LLM 工厂和 ReAct 循环抽到这里，供所有 Agent 复用。
 
 #### rag/ — 混合检索
 
 | 文件 | 内容 |
 | --- | --- |
 | `bm25.py` | 手写 BM25 索引（jieba 分词 + 逆文档频率） |
-| `hybrid.py` | Hybrid Search（BM25 0.7 + 向量 0.3 加权融合） |
+| `hybrid.py` | Hybrid Search（BM25 + 向量加权融合） |
 | `vector.py` | 向量索引（bge-small-zh-v1.5, 512 维） |
+| `retriever.py` | 会话检索器（按 session 缓存，review / import / qa 共用） |
 
 #### tools/ — 工具箱
 
 | 文件 | 内容 |
 | --- | --- |
 | `engine.py` | 搜索引擎（DuckDuckGo 优先 → Bing 后备） |
-| `tools.py` | `search_web` tool 定义 + `react_call()` ReAct 循环 |
+| `tools.py` | `search_web` tool 定义 + ReAct 循环 |
 
 #### storage/ — 数据持久化
 
@@ -301,21 +401,19 @@ router.import_document() / import_file()
   │ 从 session_service 拿到 session_id
   │ 构造 title + content
   ▼
-import_service.import_content(session_id, content, title)
+import_agent.import_content(session_id, content, title)
   │ 1. 原始文档存 documents 表
   │ 2. 构造 AgentState
-  │ 3. import_graph.invoke(state)
+  │ 3. 调 import_graph（planner 一次性图）
   ▼
-graph/graph.py 的 import_graph（一次性图）
-  │
-  └── planner 节点（graph/node.py）
-        ├── 查已有知识点 → 构建 BM25 去重索引
-        ├── 调 LLM 提取新知识点（Prompt：从内容中提取 title + content）
-        ├── BM25 去重（相似度 > 0.8 跳过）
-        ├── 批量存入 knowledge_points 表
-        ├── 清空检索缓存 _retriever_caches
-        └── 为每个新知识点生成向量 embedding（bge-small-zh）
-             保存到 knowledge_points.embedding 字段
+agent/import_agent.py 的 import_graph（planner 节点）
+  ├── 查已有知识点 → 构建 BM25 去重索引
+  ├── 调 LLM 提取新知识点（Prompt：从内容中提取 title + content）
+  ├── BM25 去重（相似度 > 0.8 跳过）
+  ├── 批量存入 knowledge_points 表
+  ├── 使检索缓存失效（rag/retriever.invalidate_retriever）
+  └── 为每个新知识点生成向量 embedding（bge-small-zh）
+       保存到 knowledge_points.embedding 字段
   │
   ▼
 返回 knowledge_points 列表给前端
@@ -326,86 +424,90 @@ graph/graph.py 的 import_graph（一次性图）
 - LLM 提取是 JSON 格式的输出，通过 `JsonOutputParser` 解析
 - BM25 去重是"二次过滤"——先让 LLM 判断不重复，再用 BM25 兜底
 - Embedding 失败不阻塞导入，降级到纯 BM25 检索
-- `_retriever_caches` 在导入后清除，下次复习时重建含新知识点的索引
+- 检索缓存 `rag/retriever.py` 在导入后失效，下次复习时重建含新知识点的索引
 
 ### 4.2 复习流程
 
+复习是目前最复杂的交互。一张 LangGraph 循环图 + interrupt 被拆到 4 个 HTTP 端点上分步调用：
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  POST /api/review/start                                         │
-│                                                                 │
-│  review_service.start(session_id)                               │
-│    → 生成 uuid thread_id                                        │
-│    → review_graph.invoke(initial_state, {thread_id})            │
-│                                                                 │
-│  scheduler 节点：                                                │
-│    → 查该会话所有知识点                                          │
-│    → 查 review_records 找薄弱 KPs（平均分 < 60）                │
-│    → 构建双车道出题队列                                          │
-│       ├── 快车道：薄弱 KPs + 混合检索扩散关联 KPs               │
-│       └── 慢车道：剩余正常 KPs                                  │
-│    → 取第一个知识点                                              │
-│                                                                 │
-│  question_gen 节点：                                             │
-│    → 查 questions 表是否有缓存题目（use_count 最少的）           │
-│    → 有缓存 → 直接返回，零 LLM 调用                              │
-│    → 无缓存 → 调 LLM 出题                                       │
-│       ├── 混合检索相关知识点作为上下文                            │
-│       ├── 查历史答题记录（Memory）→ 针对薄弱点出题               │
-│       └── ReAct：LLM 可自主搜索网络补全知识                      │
-│    → 新题目存入 questions 表供后续复用                            │
-│                                                                 │
-│  wait_input 节点：                                               │
-│    → interrupt("请输入你的回答")                                 │
-│    → 图暂停！返回题目给前端                                     │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  POST /api/review/start                                             │
+│                                                                     │
+│  review_agent.start(session_id)                                     │
+│    → 生成 uuid thread_id                                            │
+│    → review_graph.invoke(initial_state, {thread_id})                │
+│                                                                     │
+│  scheduler 节点：                                                    │
+│    → 查该会话所有知识点                                              │
+│    → 查 review_records 找薄弱 KPs（平均分 < 60）                    │
+│    → 构建双车道出题队列                                              │
+│       ├── 快车道：薄弱 KPs + 混合检索扩散关联 KPs                   │
+│       └── 慢车道：剩余正常 KPs                                      │
+│    → 取第一个知识点                                                  │
+│                                                                     │
+│  question_gen 节点：                                                 │
+│    → 查 questions 表是否有缓存题目（use_count 最少的）              │
+│    → 有缓存 → 直接返回，零 LLM 调用                                 │
+│    → 无缓存 → 调 LLM 出题                                           │
+│       ├── 混合检索相关知识点作为上下文                               │
+│       ├── 查历史答题记录（Agent Memory）→ 针对薄弱点出题            │
+│       └── ReAct：LLM 可自主搜索网络补全知识                         │
+│    → 新题目存入 questions 表供后续复用                               │
+│                                                                     │
+│  wait_input 节点：                                                   │
+│    → interrupt("请输入你的回答")                                     │
+│    → 图暂停！返回题目给前端                                         │
+└─────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────┐
-│  POST /api/review/{thread_id}/answer  {"answer": "..."}         │
-│                                                                 │
-│  review_service.submit_answer(thread_id, answer)                │
-│    → Command(resume=answer) → review_graph.invoke()             │
-│    → 从暂停处继续执行                                            │
-│                                                                 │
-│  judge 节点：                                                    │
-│    → 查该知识点的历史答题记录（Memory）                          │
-│    → 调 LLM 判分：score (0-100) + comment + strengths          │
-│                  + weaknesses + missing_kps                     │
-│    → 存入 review_records 表                                     │
-│    → 清除 stats_cache（缓存失效）                                │
-│                                                                 │
-│  条件边 judge_should_continue：                                  │
-│    ├── exit_review=True → END（复习结束）                        │
-│    └── 否则 → 继续到 scheduler（下一题）                        │
-│                                                                 │
-│  循环：scheduler → question_gen → wait_input（再次暂停）        │
-│  → 返回评价 + 下一题                                            │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  POST /api/review/{thread_id}/answer  {"answer": "..."}             │
+│                                                                     │
+│  review_agent.submit_answer(thread_id, answer)                      │
+│    → Command(resume=answer) → review_graph.invoke()                 │
+│    → 从暂停处继续执行                                                │
+│                                                                     │
+│  judge 节点：                                                        │
+│    → 查该知识点的历史答题记录（Agent Memory）                       │
+│    → 调 LLM 判分：score (0-100) + comment + strengths               │
+│                  + weaknesses + missing_kps                          │
+│    → 存入 review_records 表                                          │
+│    → 清除 stats 缓存（_clear_caches）                                │
+│                                                                     │
+│  条件边 judge_should_continue：                                      │
+│    ├── exit_review=True → END（复习结束）                            │
+│    └── 否则 → 继续到 scheduler（下一题）                            │
+│                                                                     │
+│  循环：scheduler → question_gen → wait_input（再次暂停）            │
+│  → 返回评价 + 下一题                                                 │
+└─────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────┐
-│  GET /api/review/{thread_id}/next                               │
-│  review_service.get_next(thread_id)                             │
-│    → review_graph.get_state(config)  ← 不调 invoke             │
-│    → 从 MemorySaver 读当前 state                                │
-│    → 返回缓存的 current_question                                │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  GET /api/review/{thread_id}/next                                   │
+│  review_agent.get_next(thread_id)                                   │
+│    → review_graph.get_state(config)  ← 不调 invoke                  │
+│    → 从 MemorySaver 读当前 state                                    │
+│    → 返回缓存的 current_question                                    │
+└─────────────────────────────────────────────────────────────────────┘
 
-┌─────────────────────────────────────────────────────────────────┐
-│  POST /api/review/{thread_id}/exit                              │
-│  review_service.exit(thread_id)                                 │
-│    → Command(resume="__exit__")                                 │
-│    → wait_input 收到 __exit__，设 exit_review=True              │
-│    → 条件边走 end → 图正常结束                                  │
-│    → 清除 _active_reviews 中的记录                              │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  POST /api/review/{thread_id}/exit                                  │
+│  review_agent.exit(thread_id)                                       │
+│    → Command(resume="__exit__")                                     │
+│    → wait_input 收到 __exit__，设 exit_review=True                  │
+│    → 条件边走 end → 图正常结束                                      │
+│    → 清除 _active_reviews 中的记录                                  │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+**对话入口里的复习（V1.1）**：走 `POST /api/chat` 时，supervisor 持有每个 session 当前的 `review_thread_id`。用户说「开始复习」→ 自动 `start()` 并把 thread 记到会话上；之后复习中答一句，supervisor 就 `submit_answer()` 一次——所以对话页里复习是"出一道 → 答一道 → 判一道 → 接着聊"的自然循环。
 
 ### 4.3 分析流程
 
 ```
-前端请求 GET /api/analyze
+前端请求 GET /api/analyze（或对话里说「我哪里薄弱」）
   │
-  router.analyze()
+  router.analyze() / supervisor（analyze 意图）
   │ 从 session_service 拿 session_id
   ▼
   stats_service.analyze(session_id, llm_report=True)
@@ -415,7 +517,7 @@ graph/graph.py 的 import_graph（一次性图）
   │  └─ 缓存失效 → 继续
   │
   ▼
-  graph/analyzer.py 的 analyze(session_id)
+  agent/analyzer.py 的 analyze(session_id)   （由 stats_service 委托）
   │
   ├─ get_review_records(session_id)
   │    → SELECT * FROM review_records WHERE session_id=? ORDER BY created_at ASC
@@ -434,7 +536,7 @@ graph/graph.py 的 import_graph（一次性图）
        → 最弱领域 + 具体薄弱点 + 复习建议
   │
   ▼
-  返回结果 + 写入缓存 _analyze_cache[session_id]
+  返回结果 → stats_service 写入缓存 _analyze_cache[session_id]
 ```
 
 ---
@@ -533,7 +635,7 @@ CREATE TABLE knowledge_points (
 - `embedding` 字段是 JSON 类型，存 512 个 float 的数组
 - JSON 类型不支持索引，但数据量小时（几百个 KPs）全量线性扫描做向量检索也够快
 - 未来如果数据量大，可以用 MySQL 8.4 的向量索引或外部向量数据库
-- embedding 在 planner 节点中生成，失败时不阻塞
+- embedding 在导入子 Agent（planner 节点）中生成，失败时不阻塞
 
 #### questions
 
@@ -615,12 +717,13 @@ db = scoped_session(SessionLocal)
 
 | 缓存 | 类型 | 位置 | 作用域 | 有效期 | 失效时机 |
 | --- | --- | --- | --- | --- | --- |
-| `_llm` | Python 对象 | `graph/node.py` | 进程全局 | 永久 | 服务重启 |
-| `_retriever_caches` | HybridRetriever 实例 | `graph/node.py` | 按 session_id | 永久 | 导入新知识点 |
+| `_llm` | Python 对象 | `core/llm.py` | 进程全局 | 永久 | 服务重启 |
+| `_retriever_caches` | HybridRetriever 实例 | `rag/retriever.py` | 按 session_id | 永久 | 导入新知识点 |
 | `_analyze_cache` | 分析结果 dict | `service/stats_service.py` | 按 session_id | 15 分钟 | 新答题记录 |
 | `_dashboard_cache` | Dashboard 数据 dict | `service/stats_service.py` | 按 session_id | 15 分钟 | 新答题记录 |
-| `_active_reviews` | thread 映射 dict | `service/review_service.py` | 进程全局 | 复习期间 | 复习结束/服务重启 |
-| MemorySaver | AgentState 快照 | `graph/graph.py` | 按 thread_id | 进程生命周期 | 服务重启 |
+| `_active_reviews` | thread 映射 dict | `agent/review_agent.py` | 进程全局 | 复习期间 | 复习结束/服务重启 |
+| `supervisor._convs` | 对话记忆 dict | `agent/supervisor.py` | 按 session_id | 对话期间 | 服务重启 |
+| MemorySaver | AgentState 快照 | `agent/review_agent.py`（图编译时挂载） | 按 thread_id | 进程生命周期 | 服务重启 |
 
 ### 6.2 为什么不用 Redis？
 
@@ -630,7 +733,7 @@ db = scoped_session(SessionLocal)
 - 不需要缓存持久化（重建代价很低）
 - 不需要缓存淘汰算法（数据量小，内存占用可忽略）
 
-Python 进程内 dict 足够。如果未来需要多进程部署，`_active_reviews` 和 MemorySaver 需要换 Redis/PostgreSQL。
+Python 进程内 dict 足够。如果未来需要多进程部署，`_active_reviews`、`supervisor._convs` 和 MemorySaver 需要换 Redis/PostgreSQL。
 
 ### 6.3 TTL 设计
 
@@ -638,7 +741,7 @@ Python 进程内 dict 足够。如果未来需要多进程部署，`_active_revi
 分析缓存 TTL = 15 分钟
   原因：用户做一次复习、切个页面、再回来通常不会超过 15 分钟
   覆盖：即使 TTL 没到，有新答题记录也会失效（max_record_id 检查）
-  手动清除：submit_answer 成功后调 _clear_caches()
+  手动清除：judge 判分后调 _clear_caches()
 
 检索器缓存 TTL = 永久（显式清除）
   原因：知识点导入是低频操作，导入时手动清除
@@ -647,6 +750,12 @@ Python 进程内 dict 足够。如果未来需要多进程部署，`_active_revi
 ---
 
 ## 7. LangGraph 图详解
+
+V1.2 之前图定义在 `graph/graph.py`、节点在 `graph/node.py`；V1.2 把图和节点并入各自的 Agent 文件，**结构和机制一个字没改**。下面的代码是机制示意，实际定义在：
+
+- 复习循环图 → `agent/review_agent.py` 的 `_build_review_graph()`
+- 导入一次性图 → `agent/import_agent.py`
+- 共享状态 → `agent/state.py::AgentState`
 
 ### 7.1 import_graph（一次性图）
 
@@ -739,8 +848,9 @@ class AgentState(TypedDict):
 ```
 
 - `TypedDict` 是 LangGraph 的推荐状态类型，每个节点读/写特定字段
-- `messages` 用了 `add_messages` reducer（保留历史消息），但目前没有用到多轮对话，是预留
+- `messages` 用了 `add_messages` reducer（保留历史消息），目前没有用到多轮对话，是预留
 - 导入图和复习图共享同一个 `AgentState` 定义，但只用各自需要的字段
+- V1.2 里定义在 `agent/state.py`，导入 / 复习 / 问答子 Agent 都从这里 import
 
 ### 7.4 条件边函数
 
@@ -781,6 +891,8 @@ HybridRetriever
     向量分数 → minmax 归一化 → 0.7
     → 加权求和 → 排序 → Top-K
 ```
+
+检索器按会话缓存（`rag/retriever.py`），复习出题、问答、导入去重共用同一份索引；导入新知识点后整体失效重建。
 
 ### 8.2 BM25 实现
 
@@ -933,13 +1045,14 @@ frontend/
 ├── style.css              # 保留原样（576行，含亮色/暗色）
 └── src/
     ├── main.tsx           # ReactDOM.createRoot + HashRouter + 主题初始化
-    ├── App.tsx            # Layout（Topbar + Sidebar + Content）+ Routes
+    ├── App.tsx            # Layout（Topbar + Sidebar + Content）+ 6 条页面路由
     ├── api.ts             # fetch 封装 + 全部 TypeScript 类型定义
     ├── hooks/
     │   ├── useSession.ts  # localStorage session_id 读写 + 初始化
     │   └── useReview.ts   # 复习状态机 useReducer（6 阶段）
     └── pages/
         ├── Dashboard.tsx  # 概览：统计卡片 + 快捷操作 + 入门指引
+        ├── Chat.tsx       # 对话（V1.1）：自然语言交流入口
         ├── Sessions.tsx   # 会话列表 + 创建 + 切换
         ├── Import.tsx     # 导入：上传文件 / 粘贴文本（4 阶段视图）
         ├── Review.tsx     # 复习：6 阶段状态机渲染
@@ -952,9 +1065,10 @@ frontend/
 <HashRouter>
   <App>
     ├── <header.topbar>          ← Logo + SessionBadge
-    ├── <nav.sidebar>            ← 5× NavLink + 主题切换
+    ├── <nav.sidebar>            ← 6× NavLink + 主题切换
     └── <main.main-content>      ← Routes
           ├── #/ → <Dashboard />           // 概览
+          ├── #/chat → <Chat />            // 对话（V1.1）
           ├── #/sessions → <Sessions />    // 会话管理
           ├── #/import → <Import />        // 导入资料
           ├── #/review → <ReviewPage />    // 复习
@@ -972,10 +1086,13 @@ frontend/
 | 页面 | 路由 | API 调用 | 说明 |
 | --- | --- | --- | --- |
 | 概览 | `#/` | `/api/stats`, `/api/sessions` | 5 个统计卡片 + 快捷操作 + 入门指引 |
+| 对话 | `#/chat` | `POST /api/chat` | 自然语言交流入口：意图识别 + 分发（V1.1） |
 | 会话 | `#/sessions` | `/api/sessions` CRUD | 创建、切换当前会话 |
 | 导入 | `#/import` | `/api/import`, `/api/import/file` | 上传文件 / 粘贴文本，4 阶段视图 |
 | 复习 | `#/review` | `/api/review/start/answer/next/exit` | 6 阶段状态机，最复杂的交互 |
 | 分析 | `#/analysis` | `/api/analyze` | 薄弱排行榜 + 高频词频 + LLM 报告 |
+
+**对话页（Chat.tsx）**：自己维护一份本地消息列表 `msgs[]`，另有一份 `question` 状态表示"当前是否有一道待回答的题"。后端返回结构化结果（`type: question / review_result / analysis / answer / chat / imported`）后按 type 渲染成不同卡片——出题、判分卡、分析报告都能嵌在对话流里。
 
 ### 9.6 状态管理
 
@@ -1006,6 +1123,8 @@ idle → loading → answering → submitting → evaluated → answering
 
 reducer 处理 9 种 action 类型（START / READY / SUBMIT / EVALUATED / NEXT / CONTINUE / END / RESET / ERROR），所有状态集中在 `ReviewState` 一个对象，对比原 `_lastReviewData` 全局变量方案，状态可预测、可测试。
 
+> 对话页不走 useReview——它是"纯聊"形态：问答、出题、判分都由后端 supervisor 编排，前端只做消息气泡 + 卡片渲染。
+
 ### 9.7 API 层
 
 ```typescript
@@ -1021,7 +1140,7 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
 }
 ```
 
-所有 15 个 API 端点都有 TypeScript 类型定义（Session, Stats, ReviewStartData, Evaluation 等）。
+所有 API 端点都有 TypeScript 类型定义（Session, Stats, ReviewStartData, Evaluation, **ChatResult**（6 种响应联合）等）。
 
 ### 9.8 构建产物
 
@@ -1044,6 +1163,7 @@ frontend/dist/
 | POST | `/api/sessions` | `{name}` | `{id, name, created_at}` |
 | POST | `/api/sessions/{id}/switch` | — | `{id, name}` |
 | GET | `/api/sessions/current` | — | `{id, name}` |
+| POST | `/api/chat` | `{message}` | `ChatResult`（chat/question/review_result/answer/analysis/imported 六选一） |
 | POST | `/api/import` | `{content, title?}` | `{document_id, knowledge_points}` |
 | POST | `/api/import/file` | multipart/file | `{document_id, knowledge_points}` |
 | GET | `/api/knowledge-points` | — | `[{id, title, content, avg_score, review_count}]` |
@@ -1150,45 +1270,58 @@ AI/LLM：        openai, langchain-core, langchain-openai, langgraph
 
 ## 12. 与 V2 的关系
 
-### 12.1 V1.1 已做（自然语言交流入口）
+StudyForge 的演进路线是「点哪用哪 → 聊天就能学」。V1.1 已铺好对话入口，V1.2 已把代码长成多 Agent 结构，离 V2 只剩把"分发"升级成真正的主图。
 
-V1.1 给 V1 加了一个"听得懂话"的对话皮层（见 [ROADMAP](ROADMAP.md)）：
+### 12.1 V1.1 已做 — 自然语言交流入口
+
+给 V1 加了一个"听得懂话"的皮层（见 [ROADMAP](ROADMAP.md)）：
 
 ```
-前端 Chat 页 ── POST /api/chat ──► chat_service（对话分发，规则版）
+前端 Chat 页 ── POST /api/chat ──► supervisor（对话分发，规则版）
                                         ├── nlu/intent.py   意图识别（8 类，规则优先）
-                                        ├── review_service  复习（复用，不变）
+                                        ├── review_agent    复习（复用，不变）
                                         ├── stats_service   分析（复用，不变）
-                                        ├── import_service  导入（复用，不变）
-                                        └── qa_service      轻量问答（新增，检索+回答）
+                                        ├── import_agent    导入（复用，不变）
+                                        └── qa_agent        轻量问答（检索 + grounded 回答）
 ```
 
-- `nlu/`、`service/chat_service.py`、`service/qa_service.py`、前端 `pages/Chat.tsx` 为新增
-- V1 的 LangGraph 图（import_graph / review_graph）、存储、检索全部未动
-- 对话内存态放 `chat_service._convs`（同 `_active_reviews`，服务重启即失）
+- V1.1 新增：`nlu/`、前端 `pages/Chat.tsx`、`POST /api/chat`、轻量问答；现有功能端点 / 复习图 / 存储全部复用，V1 核心零改动
+- 对话记忆态在 supervisor 的 `_convs`（同 `_active_reviews`，服务重启即失）
 
-### 12.2 V1.2 / V1.3 规划
+### 12.2 V1.2 已做 — 架构重构 · 子 Agent 化
 
-- **V1.2 架构重构 · 子 Agent 化**：把"对话分发"从规则版升级成真正的 supervisor 结构——定义可独立调用的子 Agent（review/qa/import/analyze），`interrupt` 上移到主图边界，拆分共享 `AgentState`。见 [issue #1](https://github.com/qi-wutu/StudyForge/issues/1)。
-- **V1.3 LLM 辅助意图识别**：规则快路 + LLM 兜底，输出结构化 `{intent, params}`。见 [issue #2](https://github.com/qi-wutu/StudyForge/issues/2)。
+把"对话分发"从散在 service 里的规则版，升级成**真代码结构**上的多 Agent：
 
-### 12.3 V2 目标
+- 4 个专职子 Agent（`review_agent` / `import_agent` / `qa_agent` / `analyzer`）独立成模块、接口可单独调用
+- 主 Agent `Supervisor`（`agent/supervisor.py`）：意图识别 → 分发到子 Agent
+- 拆掉上帝模块 `graph/node.py`：LLM 工厂/ReAct → `core/llm.py`，检索缓存 → `rag/retriever.py`；`graph/` 目录删除
+- 复习图（LangGraph + interrupt + MemorySaver）**原样保留**，只是迁进 `review_agent.py`；行为零回归
+- service 层收敛为 session / stats 无状态读服务；API 端点路径全不变，前端零改动
 
-项目有 V2 规划（LangGraph supervisor 多 Agent 编排），核心变化：
+一句话：V1.2 让"几个 Agent、各自干嘛"从纸面叙事变成真代码结构。但 supervisor 目前仍是**规则 if/else 分发**，还不是真正的一张 LangGraph 主图（interrupt 上移到主图边界，是 V2 核心）。见 [issue #1](https://github.com/qi-wutu/StudyForge/issues/1)（已关闭）。
+
+### 12.3 V1.3 / V2 — 还没做
+
+| 版本 | 内容 | 状态 |
+| --- | --- | --- |
+| **V1.3** | LLM 辅助意图识别：规则快路 + LLM 兜底，输出结构化 `{intent, params}` | ⏳ 规划（[issue #2](https://github.com/qi-wutu/StudyForge/issues/2)） |
+| **V2** | LangGraph supervisor 主图：interrupt 上移到主图边界，多图编排 | ⏳ 规划（见 [ROADMAP](ROADMAP.md)） |
+
+V1 vs V2 对比：
 
 | 维度 | V1（当前） | V2（规划） |
 | --- | --- | --- |
-| 路由 | 简单 HTTP -> graph | 意图识别节点 + 多图编排 |
+| 路由 | 规则 if/else 分发 | 意图识别节点 + 多图编排 |
 | 工具 | 仅有搜索 | 搜索 + 计算器 + 文档查询 + ... |
-| 图 | 两个独立图 | 一个主图调度多个子图 |
-| Agent | 单 Agent + 规则分发 | Multi-Agent 协作 |
+| 图 | 两张独立子图（review/import） | 一个主图调度多个子图 |
+| Agent | 主 Agent（规则分发）+ 子 Agent | 真正一张 LangGraph 主图调度 |
 
 **V1 的架构设计为 V2 预留了什么：**
 
+- 每个子 Agent 已是独立模块 + turn 接口，V2 主图可以直接把它们挂成节点 / Tool
 - `tools/` 目录可以收纳所有工具（搜索、计算、文档查询等）
-- `service/` 层可扩展，V2 的意图识别节点就是一个新的 service
+- `nlu/` 意图识别可从规则升级为 LLM 兜底，输出喂给主图
 - Session 隔离机制在多 Agent 场景下同样适用
-- 三层架构让 V2 新增功能时只需要加/改 service 层
 
 ---
 
@@ -1212,12 +1345,14 @@ V1.1 给 V1 加了一个"听得懂话"的对话皮层（见 [ROADMAP](ROADMAP.md
 ```
 模块          文件数     代码行数    备注
 backend/        3        150       FastAPI 路由 + 入口
-service/        4        200       业务逻辑层
-graph/          4        500       LangGraph 节点 + 图 + 分析器
-rag/            3        130       BM25 + Hybrid + Vector
+agent/          6        900       主 Agent + 4 子 Agent + state（含 LangGraph 图/节点）
+nlu/            1         90       规则意图识别（8 类 intent）
+core/           1         60       共享 LLM + ReAct
+service/        2        250       无状态读服务 + 缓存
+rag/            4        200       BM25 + Hybrid + Vector + Retriever
 tools/          2        100       搜索 + ReAct
 storage/        2        120       数据库
-frontend/       ~12      1200      React 19 + TypeScript + Vite（含 dist/）
+frontend/       ~14      1400      React 19 + TypeScript + Vite（含 dist/）
 其他            4        150       main.py + config.py + .env.example + CLI
-合计            ~35      ~2600
+合计            ~39      ~3400
 ```

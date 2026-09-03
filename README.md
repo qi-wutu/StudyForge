@@ -100,7 +100,7 @@ StudyForge/
 │   ├── style.css           # 样式（576行，亮色/暗色模式，保留原样）
 │   ├── src/
 │   │   ├── main.tsx        # ReactDOM.createRoot + HashRouter + 主题初始化
-│   │   ├── App.tsx         # Layout（Topbar + Sidebar + Content）+ 5 条路由
+│   │   ├── App.tsx         # Layout（Topbar + Sidebar + Content）+ 6 条路由
 │   │   ├── api.ts          # fetch 封装 + 全部 TypeScript 类型定义
 │   │   ├── hooks/
 │   │   │   ├── useSession.ts  # localStorage session_id 管理
@@ -141,10 +141,10 @@ StudyForge/
 └──────────────────────┬────────────────────────┘
                        ↓ 调用
 ┌───────────────────────────────────────────────┐
-│  agent/                      ← Agent 层       │
-│  supervisor 主 Agent → 分发到子 Agent          │
-│  review_agent / import_agent / qa_agent        │
-│  analyzer（LangGraph + turn API + 意图路由）    │
+│  agent/  ← Agent 层（V1.2 起）                     │
+│  supervisor 主 Agent：意图 → 分发                    │
+│  review / import / qa：复习/导入/问答                 │
+│  analyzer：薄弱分析（统计 + LLM 报告）                    │
 └──────────────┬─────────────────────┬──────────┘
                ↓ 复用底座              ↓ 无状态读服务
 ┌──────────────────────────┐   ┌─────────────────────────┐
