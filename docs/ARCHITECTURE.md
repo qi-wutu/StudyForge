@@ -1196,7 +1196,6 @@ frontend/dist/
 | POST | `/api/review/{id}/answer` | `{answer}` | `{evaluation, exit}` |
 | GET | `/api/review/{id}/next` | — | `{question, kp_title, kp_content, review_reason}` |
 | POST | `/api/review/{id}/exit` | — | `{exit: true}` |
-| GET | `/api/review/active` | — | `{active: [thread_id, ...]}` |
 | GET | `/api/analyze` | `?no_llm=true` | `{kp_stats, global_stats, llm_report?}` |
 | GET | `/api/stats` | — | `{session_name, kp_count, review_count, avg_score, doc_count, weak_kp_count}` |
 

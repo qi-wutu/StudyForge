@@ -551,10 +551,6 @@ class ReviewAgent:
 
     # ---------- 查询 / 预生成 ----------
 
-    def list_active(self) -> list[str]:
-        """查看当前正在进行的复习会话（thread_id 列表）"""
-        return list(self._active_reviews.keys())
-
     def prewarm(self, session_id: int):
         """预生成题目：为指定 session 中没有缓存的前 2 个知识点生成题目
 

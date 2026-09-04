@@ -185,14 +185,8 @@ def exit_review(thread_id: str):
     return review_agent.exit(thread_id)
 
 
-@router.get("/api/review/active")
-def list_active_reviews():
-    """查看当前正在进行的复习会话"""
-    return {"active": review_agent.list_active()}
-
-
 # ========================================
-# 自然语言对话（V1.1 入口）
+# 自然语言对话（V1.3 入口）
 #
 # 把「自然语言输入 → 意图识别 → 分发」做成一个入口。
 # Supervisor 内部调度 复习/问答/导入/分析 四个子 Agent（agent/）。
