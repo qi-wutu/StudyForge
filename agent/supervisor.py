@@ -1,30 +1,34 @@
-"""主 Agent — Supervisor
+"""主 Agent — Supervisor（V1.3：LLM 大脑）
 
-把「自然语言输入 → 意图 → 分发到子 Agent」做成一个对话门面。
-
-对应 V1.1 的 service/chat_service.py；V1.2 把它正式收进 agent/ 层，
-作为"主 Agent 调度多个子 Agent"的协调者：
+从 V1.1 的「规则路由器」升级为「LLM 工具调用循环」：
 
     Supervisor.chat(session_id, message)
-        → 意图识别（nlu/，V1.3 将升级为 LLM 兜底）
-        → 按意图分发给 复习 / 问答 / 导入 / 分析 四个子 Agent
-        → 返回结构化结果给前端渲染
+        → 确定性安全快路（退出/下一题/导入前缀——避免误判、不花 LLM）
+        → 拼 [System 提示 + 最近对话历史 + 当前消息]
+        → run_agent() 跑工具循环：LLM 自主决定调 4 个子 Agent 的能力 / 通用搜索 / 直接答
+        → 按 tool_log 里最后一张卡片决定返回 type；text 前言来自 LLM 的最终话
+        → 把自然语言回复记进对话历史，供下一轮喂回模型
 
-当前实现仍是"规则分发 + if 分发"（supervisor 的功能等同体），
-真正"一张 LangGraph 主图调度多个子图"（interrupt 上移）在后续 V2 落地。
+对话历史真正喂给了 LLM（V1.1 只记展示文本、从未给模型）——
+这是「能跟他聊天、像通用 Agent」的关键。
 
-每个 session 维护一个 Conversation：聊天历史 + 当前活跃的复习 thread。
+每个 session 维护一个 Conversation：LLM 友好历史 + 当前活跃的复习 thread + 当前题目卡片。
 """
 
-from nlu.intent import classify_intent, extract_import_content
-from service import stats_service
-from agent.import_agent import import_content
-from agent.qa_agent import answer_question
-from agent.review_agent import review_agent
+import json
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+from agent.tools import build_tools
+from core.llm import run_agent
+from nlu.intent import extract_import_content, fast_path_intent
+
+# 喂给 LLM 的最近历史条数上限（防上下文膨胀）
+_HISTORY_MAX = 8
 
 
 class Supervisor:
-    """主 Agent：识别意图并把任务交给对应子 Agent"""
+    """主 Agent：LLM 大脑 + 工具循环，调度 4 个子 Agent 的能力"""
 
     def __init__(self):
         # session_id -> Conversation
@@ -36,146 +40,198 @@ class Supervisor:
         if session_id not in self._convs:
             self._convs[session_id] = {
                 "session_id": session_id,
-                "messages": [],
-                "review_thread_id": None,
+                "messages": [],            # [{role, text}] LLM 友好历史（供展示 + 回填模型）
+                "review_thread_id": None,  # 当前活跃复习的 LangGraph thread
                 "pending_question": False,  # 是否有一道待回答的题
+                "current_card": None,       # 当前待回答题目的卡片 {question, kp_title, ...}
             }
         return self._convs[session_id]
 
     # ---------- 入口 ----------
 
     def chat(self, session_id: int, message: str) -> dict:
-        """处理一条用户消息，返回结构化结果。"""
+        """处理一条用户消息，返回结构化结果（前端按 type 渲染）。"""
         conv = self._get_conv(session_id)
+
+        # 1) 确定性安全快路：明确命令不经过 LLM，防止误判成"作答/提问"。
+        #    薄薄一层，命中即返回；其余全部交给 LLM 循环（见 build_tools 的 7 个工具）。
+        fast = fast_path_intent(message)
+        if fast is not None:
+            return self._fast_path(conv, fast, message)
+
+        # 2) 常规路径：LLM 工具调用循环
         conv["messages"].append({"role": "user", "text": message})
+        messages = [SystemMessage(content=self._system_prompt(conv))]
+        messages += self._to_history(conv["messages"][-_HISTORY_MAX:])
+        messages.append(HumanMessage(content=message))
 
-        intent = classify_intent(message, review_active=conv["pending_question"])
-        result = self._dispatch(conv, intent, message)
+        final_text, tool_log = run_agent(
+            messages,
+            build_tools(session_id, conv),
+        )
 
-        # 追加一条 assistant 显示文本
-        conv["messages"].append({"role": "assistant", "text": _display_text(result)})
+        # 3) 由 tool_log 最后一张结构化卡片决定返回 type
+        result = self._map_result(final_text, tool_log)
+
+        # 4) 记录一条 assistant 自然语言回复（不落整张卡片，避免历史被撑爆）
+        self._remember(conv, self._assistant_text(result))
         return result
 
-    # ---------- 意图分发（路由到子 Agent） ----------
+    # ---------- 确定性安全快路 ----------
 
-    def _dispatch(self, conv: dict, intent: str, message: str) -> dict:
-        sid = conv["session_id"]
+    def _fast_path(self, conv: dict, intent: str, message: str) -> dict:
+        """退出 / 下一题 / 导入 —— 复用 build_tools 里的同名工具，保持行为单一来源。"""
+        conv["messages"].append({"role": "user", "text": message})
+        tools = {t.name: t for t in build_tools(conv["session_id"], conv)}
 
-        # --- 复习子 Agent：退出 ---
         if intent == "exit_review":
-            if conv["review_thread_id"]:
-                review_agent.exit(conv["review_thread_id"])
-                conv["review_thread_id"] = None
-                conv["pending_question"] = False
-                return {"type": "chat", "text": "好，复习结束了。想继续、提问、看薄弱分析都可以随时说。"}
-            return {"type": "chat", "text": "现在没有进行中的复习哟。说「开始复习」或「考我」就能练起来。"}
-
-        # --- 分析子 Agent ---
-        if intent == "analyze":
-            data = stats_service.analyze(sid, llm_report=True)
-            if "error" in data:
-                return {"type": "chat", "text": data["error"]}
-            return {"type": "analysis", "data": data}
-
-        # --- 导入子 Agent ---
-        if intent == "import":
+            result_str = tools["exit_review"].invoke({})
+        elif intent == "next":
+            if conv.get("review_thread_id"):
+                text = "答完当前这道题，我会自动接下一题。你也可以直接输入答案，或说「退出」结束复习。"
+            else:
+                text = "还没开始复习呢。说「开始复习」我就出题。"
+            self._remember(conv, text)
+            return {"type": "chat", "text": text}
+        else:  # import —— 前缀确定但内容要再校验一次
             content = extract_import_content(message)
             if not content:
-                return {"type": "chat", "text": "把内容发我就行，比如「导入：xxx」。内容太短的话直接去「导入」页面更顺手。"}
-            res = import_content(sid, content, "对话导入")
-            n = len(res.get("knowledge_points", []))
-            return {"type": "imported", "data": {"count": n}}
+                text = "把内容发我就行，比如「导入：xxx」。内容太短的话，直接去「导入」页粘贴更顺手。"
+                self._remember(conv, text)
+                return {"type": "chat", "text": text}
+            result_str = tools["import_content"].invoke({"content": content})
 
-        # --- 复习子 Agent：开始 ---
-        if intent == "start_review":
+        result = self._card_to_result(json.loads(result_str), final_text="")
+        self._remember(conv, self._assistant_text(result))
+        return result
+
+    # ---------- 结果映射 ----------
+
+    def _map_result(self, final_text: str, tool_log: list) -> dict:
+        """从 tool_log 里取最后一张结构化卡片，映射成 ChatResult。"""
+        last = None
+        for _name, _args, result_str in tool_log:
             try:
-                thread_id, question = self._start_review(sid)
-            except ValueError as e:
-                return {"type": "chat", "text": str(e)}
-            conv["review_thread_id"] = thread_id
-            conv["pending_question"] = True
-            return {"type": "question", "data": question}
+                payload = json.loads(result_str)
+            except (TypeError, ValueError):
+                payload = None
+            if isinstance(payload, dict) and payload.get("card"):
+                last = payload  # 覆盖式：保留最后一张卡（LLM 多轮后以最终为准）
+        if last is None:
+            return {"type": "chat", "text": final_text}
+        return self._card_to_result(last, final_text)
 
-        # --- 复习子 Agent：下一题提示 ---
-        if intent == "next":
-            if not conv["review_thread_id"]:
-                return {"type": "chat", "text": "还没开始复习呢，说「开始复习」我就出题。"}
-            # V1 的复习循环是「答完自动出下一题」；这里提示用户作答或退出
-            return {"type": "chat", "text": "当前这道题答完，我会接着出下一题。你也可以直接回答，或说「退出」结束复习。"}
+    @staticmethod
+    def _card_to_result(card: dict, final_text: str) -> dict:
+        """把工具返回的卡片 JSON 还原成前端可渲染的 ChatResult。
 
-        # --- 问答子 Agent ---
-        if intent == "qa":
-            text, has_context = answer_question(sid, message)
-            return {"type": "answer", "text": text, "has_context": has_context}
+        卡片类型（question / review_result / analysis / imported）额外带
+        text=LLM 的最终话作为前言气泡；answer 直接用工具里的回答文本。
+        """
+        if not card.get("ok", True):
+            return {"type": "chat", "text": card.get("text") or card.get("error") or "出错了"}
+        kind = card.get("card", "chat")
 
-        # --- 复习子 Agent：作答 ---
-        if intent == "answer" and conv["review_thread_id"]:
-            return self._submit_answer(conv, message)
-
-        # --- 兜底引导 ---
-        return {
-            "type": "chat",
-            "text": "我可以：说「开始复习」练一道题、直接问我知识点（比如「什么是 GMP」）、说「我哪里薄弱」做分析，或者「导入：内容」收资料。",
-        }
-
-    # ---------- 复习编排 ----------
-
-    def _start_review(self, sid: int):
-        """调复习子 Agent 开始一次复习，返回 (thread_id, question 卡片)"""
-        data = review_agent.start(sid)
-        # 复习线程只在一个会话里唯一活跃即可，若已有则先退出
-        return data["thread_id"], {
-            "question": data.get("question", ""),
-            "kp_title": data.get("kp_title", ""),
-            "kp_content": data.get("kp_content", ""),
-            "review_reason": data.get("review_reason", ""),
-        }
-
-    def _submit_answer(self, conv: dict, answer: str) -> dict:
-        thread = conv["review_thread_id"]
-        res = review_agent.submit_answer(thread, answer)
-
-        if res.get("exit"):
-            conv["review_thread_id"] = None
-            conv["pending_question"] = False
-            return {"type": "review_result", "evaluation": res.get("evaluation", {}), "exit": True, "next": None}
-
-        # 没退出 → 下一题已在 checkpointer 里
-        try:
-            nxt = review_agent.get_next(thread)
-            next_card = {
-                "question": nxt.get("question", ""),
-                "kp_title": nxt.get("kp_title", ""),
-                "kp_content": nxt.get("kp_content", ""),
-                "review_reason": nxt.get("review_reason", ""),
+        if kind == "question":
+            return {"type": "question", "text": final_text, "data": card.get("data", {})}
+        if kind == "review_result":
+            d = card.get("data", {})
+            return {
+                "type": "review_result",
+                "text": final_text,
+                "evaluation": d.get("evaluation", {}),
+                "exit": bool(d.get("exit")),
+                "next": d.get("next"),
             }
-        except Exception:
-            next_card = None
-            conv["review_thread_id"] = None
-            conv["pending_question"] = False
+        if kind == "analysis":
+            return {"type": "analysis", "text": final_text, "data": card.get("data", {})}
+        if kind == "imported":
+            return {"type": "imported", "text": final_text, "data": card.get("data", {})}
+        if kind == "answer":
+            return {
+                "type": "answer",
+                "text": card.get("text", final_text),
+                "has_context": card.get("has_context", True),
+            }
+        # chat 卡（exit / 引导 / 错误提示）
+        return {"type": "chat", "text": card.get("text", final_text)}
 
-        conv["pending_question"] = next_card is not None
-        return {"type": "review_result", "evaluation": res.get("evaluation", {}), "exit": False, "next": next_card}
+    # ---------- 系统提示 ----------
+
+    @staticmethod
+    def _system_prompt(conv: dict) -> str:
+        reviewing = conv.get("review_thread_id") is not None
+        card = conv.get("current_card") or {}
+        pending = (
+            f"知识点「{card.get('kp_title', '')}」出的题：{card.get('question', '')}"
+            if reviewing and card.get("question")
+            else "无"
+        )
+        return f"""你是 StudyForge 的 AI 学习教练，陪用户复习 / 答疑 / 做薄弱分析。
+
+你只能用下面 7 个工具获取能力。**用户的资料、复习进度、答题记录等状态，只能靠调用工具拿到，绝不凭空猜测、绝不编造。** 看到明确的动作请求时，先调用对应工具，再按工具返回的内容向用户总结：
+
+- start_review：开始复习出题 —— 用户说「开始复习 / 考我 / 出题 / 测测我 / 练练」时调用
+- submit_answer：把用户的回答提交判分 —— 复习中有「待回答题目」、用户是在答题时调用
+- exit_review：结束当前复习 —— 用户说「退出 / 结束 / 算了 / 停」时调用
+- answer_question：回答用户资料里的知识点问题 —— 「什么是 X / 讲讲 Y / A和B 区别」等
+- analyze_weakness：生成薄弱分析 —— 「我哪里薄弱 / 分析一下 / 我的短板 / 当前水平」时调用
+- import_content：导入资料成知识点 —— 用户发「导入：xxx」或贴一段想收录的文字时调用
+- general_search：搜互联网 —— 问的是资料之外 / 需要较新信息的通用问题时调用
+
+原则：
+1. **动作先于说话**：出题、判分、分析、导入这些必须通过调工具完成；工具返回后你总结给用户，不要自己假装出了题或判了分。真正拿不准用户想干嘛时才纯文字闲聊并顺势引导。
+2. 复习语境消歧：复习中系统会给你「待回答题目」。用户消息若是在答这道题 → submit_answer；若是新提问 → answer_question；若是命令（分析/退出/再来一轮/导入）→ 对应工具；答完题后一般接着出下一题或问是否继续。
+3. 可以从话里识别学习主题（如「复习数据库索引」里的「数据库索引」），在回复中点出来让他感到被理解；目前出题不会真的按主题过滤。
+4. 一次用户消息通常只做一个主要动作；最后都给一句自然的中文收尾。
+
+【当前复习状态】
+进行中：{'是' if reviewing else '否'}
+待回答题目：{pending}"""
+
+    # ---------- 历史辅助 ----------
+
+    @staticmethod
+    def _to_history(msgs: list) -> list:
+        out = []
+        for m in msgs:
+            text = (m.get("text") or "").strip()
+            if not text:
+                continue
+            out.append(
+                HumanMessage(content=text)
+                if m.get("role") == "user"
+                else AIMessage(content=text)
+            )
+        return out
+
+    @staticmethod
+    def _remember(conv: dict, text: str):
+        """记一条 assistant 自然语言回复（历史只存文本，卡片数据不进历史）。"""
+        if text:
+            conv["messages"].append({"role": "assistant", "text": text})
+
+    @staticmethod
+    def _assistant_text(result: dict) -> str:
+        """给对话历史/记忆用的纯文本（前端主要靠结构化结果渲染卡片）。"""
+        t = result.get("type")
+        if t == "chat":
+            return result.get("text", "")
+        if t == "answer":
+            return result.get("text", "")
+        if t == "question":
+            return result.get("text") or ("出题：" + (result.get("data", {}).get("question") or ""))
+        if t == "review_result":
+            return result.get("text") or (
+                f"评分 {result.get('evaluation', {}).get('score')}："
+                f"{result.get('evaluation', {}).get('comment', '')}"
+            )
+        if t == "analysis":
+            return result.get("text") or "你的薄弱分析已生成，见下方卡片。"
+        if t == "imported":
+            return result.get("text") or f"已导入 {result.get('data', {}).get('count', 0)} 个知识点。"
+        return ""
 
 
-def _display_text(result: dict) -> str:
-    """给对话历史用的纯文本（前端主要靠结构化结果渲染）。"""
-    t = result.get("type")
-    if t == "chat":
-        return result.get("text", "")
-    if t == "question":
-        return "开始复习：" + (result.get("data", {}).get("question") or "")
-    if t == "review_result":
-        ev = result.get("evaluation", {})
-        return f"评分 {ev.get('score')}：{ev.get('comment','')}"
-    if t == "answer":
-        return result.get("text", "")
-    if t == "analysis":
-        return "你的薄弱分析已生成，见下方卡片。"
-    if t == "imported":
-        return f"已导入 {result.get('data',{}).get('count',0)} 个知识点。"
-    return ""
-
-
-# 全局单例（同 review_agent 的理由：要维护跨请求的 Conversation 状态）
+# 全局单例（要维护跨请求的 Conversation 状态）
 supervisor = Supervisor()

@@ -37,6 +37,32 @@ def _looks_like_question(msg: str) -> bool:
     return False
 
 
+def fast_path_intent(message: str) -> str | None:
+    """确定性安全快路（V1.3）
+
+    只拦截 3 个「绝不该让 LLM 误判」的廉价命令/前缀，不消耗 LLM：
+      - 退出复习 / 下一题：复习语境下的明确命令，避免被当成对当前题的回答
+      - 导入前缀：「导入：xxx」直接走导入
+
+    其余意图（开始复习 / 提问 / 分析 / 闲聊）一律交给 LLM 工具循环判断。
+    命中返回 intent 字符串，未命中返回 None。
+
+    与 classify_intent 的正则并存但不共用：classify_intent 仍是「规则路由器」
+    的完整实现（tests 锁定、V1 接口保留），fast_path_intent 只取其中确定性最强的
+    一小撮，供 Supervisor 在跑 LLM 循环前做安全网。
+    """
+    msg = message.strip()
+    if not msg:
+        return None
+    if _EXIT.search(msg):
+        return "exit_review"
+    if _NEXT.match(msg):
+        return "next"
+    if _IMPORT.match(msg):
+        return "import"
+    return None
+
+
 def classify_intent(message: str, *, review_active: bool = False) -> str:
     """对用户一条消息做意图识别。
 

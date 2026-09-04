@@ -107,14 +107,16 @@ export type ChatResult =
   | { type: "chat"; text: string }
   | {
       type: "question";
+      text?: string; // V1.3：LLM 自然语言前言（卡片渲染前先出气泡）
       data: { question: string; kp_title: string; kp_content: string; review_reason: string };
     }
   | {
       type: "review_result";
+      text?: string;
       evaluation: Evaluation;
       exit: boolean;
       next: { question: string; kp_title: string; kp_content: string; review_reason: string } | null;
     }
   | { type: "answer"; text: string; has_context: boolean }
-  | { type: "analysis"; data: AnalyzeData }
-  | { type: "imported"; data: { count: number } };
+  | { type: "analysis"; text?: string; data: AnalyzeData }
+  | { type: "imported"; text?: string; data: { count: number } };

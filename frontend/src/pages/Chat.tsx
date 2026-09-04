@@ -42,28 +42,29 @@ export default function ChatPage() {
   function handleResult(res: ChatResult) {
     switch (res.type) {
       case "question":
+        // V1.3：LLM 的自然语言前言（如"给你出道题"）先出气泡，再钉住题目卡
         setQuestion(res.data);
-        addMsg("assistant", `出题：${res.data.question}`);
+        addMsg("assistant", res.text || `出题：${res.data.question}`);
         break;
       case "review_result": {
         addCard("eval", res.evaluation);
         if (res.next) {
           setQuestion(res.next);
-          addMsg("assistant", `下一题：${res.next.question}`);
+          addMsg("assistant", res.text || `下一题：${res.next.question}`);
         } else {
           setQuestion(null);
-          addMsg("assistant", "复习结束了。还想练或有别的需要告诉我。");
+          addMsg("assistant", res.text || "复习结束了。还想练或有别的需要告诉我。");
         }
         break;
       }
       case "analysis": {
         const txt = res.data.llm_report || "数据还不多，先多复习几轮再来看分析。";
-        addMsg("assistant", "你的薄弱分析：");
+        addMsg("assistant", res.text || "你的薄弱分析：");
         addCard("report", txt);
         break;
       }
       case "imported":
-        addMsg("assistant", `已导入 ${res.data.count} 个知识点，可以开始复习咯。`);
+        addMsg("assistant", res.text || `已导入 ${res.data.count} 个知识点，可以开始复习咯。`);
         break;
       case "answer":
       case "chat":

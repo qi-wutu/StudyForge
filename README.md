@@ -41,7 +41,7 @@ python main.py
 | --- | --- |
 | **概览** | Dashboard：会话名称、知识点总数、答题记录、平均分、薄弱数 |
 | **会话管理** | 创建/切换会话，数据隔离互不干扰 |
-| **对话（V1.1）** | 自然语言入口：说「复习」「问知识点」「哪里薄弱」就自动分发 |
+| **对话（V1.3）** | LLM 大脑：像聊天一样说「开始复习」「什么是 GMP」「我哪里薄弱」「导入：…」，它自己决定调哪个能力，还带对话记忆 |
 | **导入资料** | 上传 `.md`/`.txt` 文件或粘贴文本，AI 自动提取知识点 |
 | **复习** | AI 出题 → 输入回答 → AI 评分 + 评语 + 优缺点 + 缺失知识点 |
 | **薄弱分析** | 薄弱排行榜 + 高频缺失 + AI 分析报告 |
@@ -61,22 +61,23 @@ StudyForge/
 │   └── router.py           # API 路由（只做 HTTP 解析，不碰业务）
 │
 ├── agent/                  # Agent 层（V1.2 起）
-│   ├── supervisor.py       # 主 Agent：意图识别 → 分发到各子 Agent
+│   ├── supervisor.py       # 主 Agent（V1.3）：LLM 大脑 → 工具循环调度各子 Agent
 │   ├── review_agent.py     # 复习子 Agent（LangGraph：调度/出题/判分 + turn API）
 │   ├── import_agent.py     # 导入子 Agent（提取知识点 + 去重 + embedding）
 │   ├── qa_agent.py         # 问答子 Agent（混合检索 + grounded 回答）
 │   ├── analyzer.py         # 分析子 Agent（统计 + LLM 报告）
+│   ├── tools.py            # Agent 工具集（build_tools：把子 Agent 能力包成 7 个工具）
 │   └── state.py            # Agent 状态定义
 │
 ├── core/                   # 跨 Agent 共享底座
-│   └── llm.py              # get_llm() 单例 + react_json() 轻量 ReAct
+│   └── llm.py              # get_llm() 单例 + react_json() + run_agent() 通用工具循环
 │
 ├── service/                # 无状态数据/读服务（Session CRUD + 统计缓存）
 │   ├── session_service.py  # 会话 CRUD + session_id 解析
 │   └── stats_service.py    # 统计分析：Dashboard、知识点列表、薄弱分析（缓存）
 │
-├── nlu/                    # 自然语言理解（V1.1）
-│   └── intent.py           # 简易意图识别（规则优先，8 类 intent）
+├── nlu/                    # 自然语言理解（V1.1 规则，V1.3 退为安全快路）
+│   └── intent.py           # 8 类规则完整保留 + fast_path_intent() 确定性快路
 │
 ├── tools/                  # 工具箱（子 Agent 的 ReAct 搜索工具）
 │   ├── engine.py           # 搜索引擎（DuckDuckGo → Bing 双引擎后备）
@@ -107,7 +108,7 @@ StudyForge/
 │   │   │   └── useReview.ts   # 复习状态机（useReducer，6 阶段）
 │   │   └── pages/
 │   │       ├── Dashboard.tsx  # 概览页：统计卡片 + 快捷操作
-│   │       ├── Chat.tsx       # 对话页（V1.1）：自然语言交流入口
+│   │       ├── Chat.tsx       # 对话页（V1.1→V1.3）：自然语言交流入口，卡片带 LLM 前言
 │   │       ├── Sessions.tsx   # 会话管理：创建 / 切换
 │   │       ├── Import.tsx     # 资料导入：上传文件 / 粘贴文本
 │   │       ├── Review.tsx     # 复习：6 阶段状态机渲染
@@ -120,7 +121,8 @@ StudyForge/
 │   └── README.md           # 评测三维度说明
 │
 ├── tests/                  # 单元测试（pytest）
-│   └── test_intent.py      # 意图识别用例（8 类 intent + 复习语境消歧）
+│   ├── test_intent.py      # 意图识别用例（8 类 intent + 复习语境消歧）
+│   └── test_agent_core.py  # 工具层 / run_agent 循环用例
 │
 └── docs/                    # 公开文档
     ├── ROADMAP.md           # 版本路线（V1 现状 + V2 规划）
@@ -141,10 +143,10 @@ StudyForge/
 └──────────────────────┬────────────────────────┘
                        ↓ 调用
 ┌───────────────────────────────────────────────┐
-│  agent/  ← Agent 层（V1.2 起）                     │
-│  supervisor 主 Agent：意图 → 分发                    │
-│  review / import / qa：复习/导入/问答                 │
-│  analyzer：薄弱分析（统计 + LLM 报告）                    │
+│  agent/  ← Agent 层（V1.2 起，V1.3 加 tools.py）   │
+│  supervisor：主 Agent，LLM 大脑，自主决定调哪个工具│
+│  review / import / qa / analyzer：四个子 Agent     │
+│  tools 打包子 Agent 能力，run_agent 跑工具循环     │
 └──────────────┬─────────────────────┬──────────┘
                ↓ 复用底座              ↓ 无状态读服务
 ┌──────────────────────────┐   ┌─────────────────────────┐
@@ -196,7 +198,7 @@ POST /review/{thread_id}/exit
 
 ---
 
-## 六大核心特性
+## 核心特性
 
 ### 1. 双车道智能调度
 
@@ -243,6 +245,18 @@ tools/engine.py
 
 详情见 [Benchmark 文档](benchmark/README.md)。
 
+### 7. LLM 大脑 Supervisor（V1.3）
+
+supervisor 从「规则路由器」升级成 **LLM 工具调用循环**，是 V1 现在的对话大脑：
+
+- **`core/llm.py::run_agent()`** — 通用工具循环：LLM 绑定一组工具，自主决定调哪个、可多轮往复、超轮强制收尾
+- **`agent/tools.py::build_tools()`** — 把复习/问答/分析/导入/通用搜索能力打包成 **7 个可调用工具**
+- **对话历史真正喂给 LLM** — 你说过的话、它回的话都进上下文，能"边聊边学"、记得你刚导入的资料
+- **`nlu/` 退为确定性安全快路** — "退出/下一题/导入" 这类最确定的命令不花 LLM，其余全交给大脑判断
+- **出题/判分/分析卡片前带一句 LLM 前言** — 更有"聊天"手感，而不是生硬地弹卡片
+
+你只需要像聊天一样说话：「开始复习」「考考我 GMP」「什么是自旋锁」「我哪里薄弱」「导入：……」，它自己决定调哪个子能力。
+
 ---
 
 ## API 端点一览
@@ -252,7 +266,7 @@ tools/engine.py
 | GET | `/api/sessions` | 会话列表 | — |
 | POST | `/api/sessions` | 创建会话 | — |
 | POST | `/api/sessions/{id}/switch` | 切换（查会话信息） | - |
-| POST | `/api/chat` | 自然语言对话入口（V1.1）：识别意图并分发 | session_id |
+| POST | `/api/chat` | 自然语言对话入口（V1.3）：LLM 工具循环 → 分发到各子 Agent | session_id |
 | GET | `/api/sessions/current` | 当前会话信息 | 可选 |
 | POST | `/api/import` | 粘贴文本导入 | session_id |
 | POST | `/api/import/file` | 上传文件导入 | session_id |
@@ -298,6 +312,7 @@ tools/engine.py
 | "三层架构怎么分的？" | Controller 只接 HTTP，Service 封装 LangGraph 驱动，底层管 DB + 图节点 |
 | "判题逻辑？" | 不是字符串比较，是 LLM 根据标准答案 + 用户回答综合打分 |
 | "Tool Calling 呢？" | question_gen 节点内嵌轻量 ReAct，LLM 可自主决定搜网络增强出题 |
+| "Supervisor 怎么当大脑的？" | LLM 绑定 7 个工具跑 `run_agent()` 多轮工具循环，读对话历史自主决定路由；只留"退出/下一题/导入"确定性安全快路 |
 | "Agent Memory？" | 出题/判分时注入历史答题记录——发现"漏了什么"、"进步了没有" |
 | "薄弱分析怎么做的？" | 从 review_records 聚合，按 KP 统计均分/趋势 + 全局词频 + LLM 报告，结果缓存 15 分钟 |
 | "怎么保证不重复考同一块？" | 双车道 2:1 交错 + 一轮一次约束，防止薄弱扩散导致饿死 |
@@ -356,9 +371,16 @@ python-dotenv
 - [x] `graph/` 目录删除；service 收敛为 session/stats 无状态读服务
 - [x] 复习 LangGraph + interrupt 原样保留（迁入 ReviewAgent），行为零回归
 
+### V1.3（LLM 大脑 · 通用 Agent 化）
+
+- [x] `core/llm.py::run_agent()` 通用工具循环：LLM 自主决定调哪个工具、可多轮往复、超轮收尾
+- [x] `agent/tools.py::build_tools()`：把 4 个子 Agent + 通用搜索能力包成 7 个工具
+- [x] `Supervisor.chat()` 重写为 LLM 工具循环；对话历史真正喂给模型（记得你刚说过/刚导入的）
+- [x] `nlu/` 退为确定性安全快路：8 类正则保留（`classify_intent` 测试锁定），只拦「退出/下一题/导入」
+- [x] 前端卡片带 LLM 前言气泡；单测 13 意图 + 16 工具层/循环 = 29 条
+
 ### 后续想法
 
 - 多文档混合复习
 - 遗忘曲线间隔重复
-- V1.3 LLM 辅助意图识别（见 [issue](https://github.com/qi-wutu/StudyForge/issues/2)）
 - V2：LangGraph supervisor 多 Agent 编排（详见 [ROADMAP](docs/ROADMAP.md)）

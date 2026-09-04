@@ -1,29 +1,31 @@
 # StudyForge 架构文档
 
-> 版本：2.1（V1.2 子 Agent 化 · Web 版）  
+> 版本：2.2（V1.3 LLM 大脑 · Web 版）  
 > 最后更新：2026-09-03
 
 ---
 
-## 架构现状一句话（V1.2）
+## 架构现状一句话（V1.3）
 
-V1.2 把代码结构从「图 + service」重构成「**主 Agent 调度多个子 Agent**」。底层机制**没变**——LangGraph 复习循环图、混合检索、LLM 判分、Agent Memory 全部原样保留，只是文件重新归位、职责重新切分：
+V1.3 把 supervisor 从「规则路由器」升级成 **LLM 大脑**——它会自己决定调哪个能力、能记得你刚说过/刚导入的。底层机制**没变**——LangGraph 复习循环图、混合检索、LLM 判分、Agent Memory 全部原样保留，只是顶层调度换成了 **LLM 工具调用循环**：
 
 ```
 HTTP 层   backend/router.py
    │  只做 HTTP 解析 + JSON 返回，不碰业务
    ▼
 Agent 层  agent/
-   supervisor（主 Agent：意图识别 → 分发到子 Agent）
-   ├─ review_agent   复习子 Agent（LangGraph 循环图 + start/answer/next/exit turn API）
-   ├─ import_agent   导入子 Agent（planner 一次性图）
-   ├─ qa_agent       问答子 Agent（混合检索 + grounded 回答）
-   └─ analyzer       分析子 Agent（统计聚合 + LLM 报告）
-   ▲ 意图皮层 nlu/intent.py（规则优先，8 类 intent）
+   supervisor（主 Agent：LLM 大脑）    ←── nlu/intent.py 只拦「退出/下一题/导入」确定性快路
+   │  core/llm.py::run_agent() 跑工具循环：LLM 自主决定调哪个、多轮往复
+   ▼
+   agent/tools.py::build_tools() —— 把 4 个子 Agent 的能力打包成 7 个可调用工具
+   ├─ start_review / submit_answer / exit_review → review_agent（LangGraph 复习图 + turn API）
+   ├─ answer_question                            → qa_agent（混合检索 + grounded 回答）
+   ├─ analyze_weakness                           → analyzer（统计聚合 + LLM 报告）
+   └─ import_content / general_search            → import_agent / tools 搜索
    │
    ▼ 复用底座
 service/（session/stats 无状态读服务 + 缓存）
-core/（LLM + ReAct） rag/（BM25 + 向量） tools/（搜索） storage/（MySQL）
+core/（get_llm + run_agent） rag/（BM25 + 向量） tools/（搜索） storage/（MySQL）
 ```
 
 下文凡是讲图节点机制（scheduler / question_gen / judge / planner）的地方，都以 `agent/` 下的实现为准：
@@ -31,8 +33,9 @@ core/（LLM + ReAct） rag/（BM25 + 向量） tools/（搜索） storage/（MyS
 - 复习循环图定义在 `agent/review_agent.py` 的 `_build_review_graph()`
 - 导入一次性图在 `agent/import_agent.py`
 - 图共享状态 `AgentState` 在 `agent/state.py`
+- 通用工具循环 `run_agent()` 在 `core/llm.py`；工具打包 `build_tools()` 在 `agent/tools.py`
 
-> 演进叙事：V1.2 之前是「图 + service」两层；V1.2 之后长成了能讲的多 Agent 故事——每个子 Agent 独立成模块、接口可单独调用，顶层 `supervisor` 负责调度。supervisor 目前仍是**规则分发**（if/else），把它升级成一张真正的 LangGraph 主图（interrupt 上移到主图边界）是 V2 的核心（见第 12 节）。
+> 演进叙事：V1.1 给 V1 加了对话皮层，V1.2 把代码重构成「主 Agent + 4 子 Agent」的多 Agent 结构，V1.3 把顶层 supervisor 从规则 if/else 升级成 **LLM 工具调用循环**（见第 3.2 / 12 节）。现在这套「决策 → 调工具 → 多轮」跑在命令式循环里，把它画成一张真正的 LangGraph 主图（interrupt 上移到主图边界）是 V2 的核心。
 
 ---
 
@@ -102,12 +105,12 @@ StudyForge 是一个 **AI 自适应复习系统**，核心业务流程是：
 │  └──────────────────────────────┬──────────────────────────────────┘  │
 │                                 ▼                                    │
 │  ┌─────────────────────────────────────────────────────────────────┐  │
-│  │ Agent 层  agent/  （+ nlu/ 意图识别）                             │  │
-│  │   supervisor  主 Agent：识别意图 → 分发                           │  │
-│  │   ├─ review_agent   复习图（LangGraph + interrupt + turn API）    │  │
-│  │   ├─ import_agent   导入图（planner，提取知识点）                  │  │
-│  │   ├─ qa_agent       问答（混合检索 + grounded 回答）              │  │
-│  │   └─ analyzer       薄弱分析（统计聚合 + LLM 报告）               │  │
+│  │ Agent 层  agent/  （V1.3：LLM 大脑）                             │  │
+│  │   supervisor  主 Agent：读对话历史 → LLM 决定调哪个工具     │  │
+│  │   tools.build_tools()   把 4 个子 Agent 打包成 7 个工具     │  │
+│  │   core.llm.run_agent()  跑多轮工具循环（core/llm.py）       │  │
+│  │   review / import / qa / analyzer：四个子 Agent             │  │
+│  │   nlu/intent.py 退为「退出/下一题/导入」确定性快路          │  │
 │  └──────────────┬──────────────────────┬────────────────────────────┘  │
 │                 │ 复用底座               │ 无状态读服务                 │
 │  ┌────────────────────────────┐   ┌───────────────────────────────┐   │
@@ -166,7 +169,7 @@ def get_stats(session_id: Optional[int] = Query(None)):
 ```
 
 ```python
-# 自然语言入口 → 主 Agent（V1.1）
+# 自然语言入口 → 主 Agent（V1.3：LLM 工具循环）
 @router.post("/api/chat")
 def chat(req: ChatRequest, session_id: Optional[int] = Query(None)):
     sid = session_service.resolve_session_id(session_id)
@@ -189,7 +192,8 @@ V1.2 之前，代码是「`graph/` 上帝模块 + 一堆 service」，负责调�
 
 | 文件 | 角色 | 职责 / 公开接口 |
 | --- | --- | --- |
-| `supervisor.py` | 主 Agent | `Supervisor.chat(session_id, message)`：意图识别 → 分发 → 返回结构化结果 |
+| `supervisor.py` | 主 Agent（LLM 大脑） | `Supervisor.chat(session_id, message)`：确定性安全快路 → LLM 工具循环 → 返回结构化结果 |
+| `tools.py` | 工具集 | `build_tools(session_id, conv)`：把 4 个子 Agent + 统计能力打包成 7 个可调用工具 |
 | `review_agent.py` | 复习子 Agent | LangGraph 循环图（调度/出题/判分）+ `ReviewAgent`：`start/answer/next/exit` |
 | `import_agent.py` | 导入子 Agent | `import_content(session_id, content, title)` → `{document_id, knowledge_points}` |
 | `qa_agent.py` | 问答子 Agent | `answer_question(session_id, question)` → `(text, has_context)` |
@@ -198,53 +202,74 @@ V1.2 之前，代码是「`graph/` 上帝模块 + 一堆 service」，负责调�
 
 > 复习 / 导入仍用 LangGraph，只是**图定义和节点函数跟着对应 Agent 走**（`_build_review_graph()` / `import_agent` 的 planner 图），节点机制在第 7 节详述。`graph/` 目录已在 V1.2 删除。
 
-#### Supervisor：主 Agent
+#### Supervisor：主 Agent（V1.3 LLM 大脑）
+
+V1.3 的 supervisor 不再是规则路由器，而是跑在 **LLM 工具调用循环** 上的"大脑"：
 
 ```python
 class Supervisor:
-    """主 Agent：识别意图并把任务交给对应子 Agent"""
+    """主 Agent：LLM 大脑——读对话历史，自己决定调哪个工具"""
 
     def chat(self, session_id: int, message: str) -> dict:
         conv = self._get_conv(session_id)          # 每 session 一份对话记忆
-        intent = classify_intent(message, review_active=conv["pending_question"])
-        return self._dispatch(conv, intent, message)  # 按意图分发
+        fast = fast_path_intent(message)           # ① 确定性安全快路（薄薄一层）
+        if fast is not None:
+            return self._fast_path(conv, fast, message)
+        messages = [SystemMessage(content=self._system_prompt(conv))]
+        messages += self._to_history(conv["messages"][-8:])   # ② 最近对话喂给 LLM
+        messages.append(HumanMessage(content=message))
+        final_text, tool_log = run_agent(
+            messages, build_tools(session_id, conv),          # ③ 跑工具循环
+        )
+        return self._map_result(final_text, tool_log)         # ④ 按最后一张卡定 type
 ```
 
-`supervisor.chat()` 内部依次做三件事：
+`supervisor.chat()` 内部做四件事：
 
-1. **记录对话** — 每个 session 维护一个 `Conversation`：`messages` + `review_thread_id` + `pending_question`（是否有一道待回答的题）。
-2. **意图识别** — 调 `nlu/intent.py::classify_intent()`，传入 `review_active` 用于消歧。
-3. **分发** — 按意图把任务交给对应子 Agent，返回结构化结果给前端渲染。
+1. **确定性安全快路** — `nlu/intent.py::fast_path_intent()` 只拦「退出 / 下一题 / 导入前缀」三种最确定、最不该让 LLM 猜的命令，不花 LLM。
+2. **对话历史真正喂给 LLM** — V1.1 的历史只存展示文本、从未给模型；V1.3 拼 `[System 提示 + 最近 8 条对话 + 当前消息]`，所以它记得你刚说过/刚导入的。
+3. **跑工具循环** — `run_agent()`（`core/llm.py`）里 LLM 绑定 `build_tools()` 的 7 个工具，自主决定调哪个、可多轮往复、超轮强制收尾。
+4. **结果映射** — 由 `tool_log` 里"最后一张结构化卡片"决定返回 type；question / review_result / analysis / imported 卡额外带 LLM 的最终话作前言气泡。
 
-**意图 → 子 Agent 分发表：**
+**工具循环里的调度**（路由决策权已从规则表交给 LLM，下表是它"通常会这么选"）：
 
-| 用户说的话 | intent | 分发给 | 返回 type |
-| --- | --- | --- | --- |
-| 「退出 / 结束 / 不考了」 | `exit_review` | review_agent（退出当前复习） | `chat` |
-| 「开始复习 / 考我 / 出题」 | `start_review` | review_agent（`start`） | `question` |
-| 「下一题」 | `next` | 提示语（答完自动出下一题） | `chat` |
-| 「我哪里薄弱 / 分析一下」 | `analyze` | stats_service → analyzer | `analysis` |
-| 「导入：xxx」 | `import` | import_agent（`import_content`） | `imported` |
-| 「什么是 GMP？」（非复习时提问） | `qa` | qa_agent（`answer_question`） | `answer` |
-| （复习中）用户直接作答 | `answer` | review_agent（`submit_answer`） | `review_result` |
-| 其他闲聊 / 空输入 | `smalltalk` | 兜底引导文案 | `chat` |
+| 用户说的话（示意） | LLM 调用的工具 | 返回 type |
+| --- | --- | --- |
+| 「开始复习 / 考我 / 出题」 | `start_review` | `question` |
+| （复习中）直接作答 | `submit_answer` | `review_result` |
+| 「退出 / 结束 / 不考了」 | `exit_review` | `chat` |
+| 「我哪里薄弱 / 分析一下」 | `analyze_weakness` | `analysis` |
+| 「导入：xxx」 | `import_content` | `imported` |
+| 「什么是 GMP？」 | `answer_question` | `answer` |
+| 资料之外 / 要较新信息 | `general_search` | `chat` |
+| 闲聊 / 拿不准 | （不调工具）直接回 | `chat` |
 
-**复习中的消歧（关键设计）**：复习进行中（`pending_question=True`），用户发来的普通消息优先视为**当前题的回答**（`answer`），只有明显是提问的句子（以"什么是/怎么/为什么"开头或以问号结尾）才插话走 `qa`。
+**复习中的消歧（关键设计，写进 System Prompt）**：提示里会带出当前「待回答题目」。复习中用户发普通消息优先视为**作答**（→ `submit_answer`），明显是新提问走 `answer_question`，是命令（退出/分析/导入）走对应工具。
 
-> 局限（也是 V2 的入口）：当前 supervisor 是「规则 + if/else」分发，不是一张 LangGraph 主图。把分发升级成图（interrupt 上移到主图边界）就是 V2 的核心工作。
+**为什么留一层规则快路？** 纯 LLM 是概率性的，偶尔会把「退出」接成闲聊。像退出 / 下一题 / 导入这种最确定的廉价命令用正则兜住，既不误判也省一次 LLM 调用；这层随时可删，不影响主流程。安全快路复用 `build_tools` 里的同名工具（`exit_review` / `import_content`），行为保持单一来源。
 
-#### nlu/ — 意图皮层
+> 局限（也是 V2 的入口）：这套「LLM 决策 → 调工具 → 多轮」目前跑在 `run_agent()` 的命令式循环里，interrupt 没有上移到主图边界、子能力也没在图上显式编排。把决策层画成一张可中断、可检查点的 LangGraph 主图，就是 V2 的核心工作。
+
+#### nlu/ — 意图皮层（V1.3 起退为确定性安全快路）
 
 ```
 nlu/intent.py
-  classify_intent(message, review_active=False) -> intent
+  classify_intent(message, review_active=False) -> intent    # 8 类完整保留，测试锁定
     ├─ 正则强命令（无条件最高优先）
     │    exit_review / start_review / next / analyze / import
     ├─ 复习中：非命令、非提问 → answer
     └─ 提问判定（问号结尾 / 疑问词开头）→ qa，否则 smalltalk
+
+  fast_path_intent(message) -> str | None                    # V1.3 新增：确定性快路
+    └─ 只拦最确定的小撮命令：exit_review / next / import（前缀）
 ```
 
-规则优先 = **零 LLM 调用、可预测、可单测**。8 类 intent 的判定全部收敛在 `tests/test_intent.py`（13 个用例）。V1.3 规划在"规则拿不准"时接 LLM 兜底，输出结构化 `{intent, params}`。
+V1.3 之后，supervisor 的**主流程不再走 `classify_intent`**——对话直接交给 LLM 工具循环。`nlu/` 保留两样东西：
+
+- **8 类正则完整保留**（`classify_intent`，13 个用例锁在 `tests/test_intent.py`）——V1.1 的规则能力没丢，只是不再当主路由。
+- **`fast_path_intent()` 确定性快路**——只拦「退出 / 下一题 / 导入」这类绝不该让 LLM 猜的命令，不花 LLM、防误判。
+
+规则快路 = **零 LLM 调用、可预测、可单测**。V1.3 新增的工具层/循环单测在 `tests/test_agent_core.py`（16 个用例，mock 底层子 Agent 与 LLM）。
 
 #### ReviewAgent（复习子 Agent）详解
 
@@ -359,9 +384,9 @@ def _is_cache_valid(entry, session_id) -> bool:
 
 | 文件 | 内容 |
 | --- | --- |
-| `llm.py` | `get_llm()`（ChatOpenAI 单例，.env 驱动）+ `react_json()`（轻量 ReAct 循环） |
+| `llm.py` | `get_llm()`（ChatOpenAI 单例，.env 驱动）+ `react_json()`（单工具 ReAct）+ `run_agent()`（V1.3 通用工具循环） |
 
-V1.2 把原来 `graph/node.py` 里的 LLM 工厂和 ReAct 循环抽到这里，供所有 Agent 复用。
+V1.2 把原来 `graph/node.py` 里的 LLM 工厂和 ReAct 循环抽到这里，供所有 Agent 复用；V1.3 又加了 `run_agent()`——把「绑定一组工具 → LLM 自主决定调哪个 → 多轮往复 → 超轮收尾」的通用循环抽到共享底座，`supervisor` 和子 Agent 都能用。
 
 #### rag/ — 混合检索
 
@@ -500,7 +525,7 @@ agent/import_agent.py 的 import_graph（planner 节点）
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-**对话入口里的复习（V1.1）**：走 `POST /api/chat` 时，supervisor 持有每个 session 当前的 `review_thread_id`。用户说「开始复习」→ 自动 `start()` 并把 thread 记到会话上；之后复习中答一句，supervisor 就 `submit_answer()` 一次——所以对话页里复习是"出一道 → 答一道 → 判一道 → 接着聊"的自然循环。
+**对话入口里的复习（V1.3）**：走 `POST /api/chat` 时，supervisor 持有每个 session 当前的 `review_thread_id`。用户说「开始复习」→ LLM 调 `start_review` 工具自动 `start()` 并把 thread 记到会话上；之后复习中答一句，LLM 就调 `submit_answer` 判分一次——所以对话页里复习是"出一道 → 答一道 → 判一道 → 接着聊"的自然循环。
 
 ### 4.3 分析流程
 
@@ -1052,7 +1077,7 @@ frontend/
     │   └── useReview.ts   # 复习状态机 useReducer（6 阶段）
     └── pages/
         ├── Dashboard.tsx  # 概览：统计卡片 + 快捷操作 + 入门指引
-        ├── Chat.tsx       # 对话（V1.1）：自然语言交流入口
+        ├── Chat.tsx       # 对话（V1.3）：LLM 大脑对话页
         ├── Sessions.tsx   # 会话列表 + 创建 + 切换
         ├── Import.tsx     # 导入：上传文件 / 粘贴文本（4 阶段视图）
         ├── Review.tsx     # 复习：6 阶段状态机渲染
@@ -1068,7 +1093,7 @@ frontend/
     ├── <nav.sidebar>            ← 6× NavLink + 主题切换
     └── <main.main-content>      ← Routes
           ├── #/ → <Dashboard />           // 概览
-          ├── #/chat → <Chat />            // 对话（V1.1）
+          ├── #/chat → <Chat />            // 对话（V1.3）
           ├── #/sessions → <Sessions />    // 会话管理
           ├── #/import → <Import />        // 导入资料
           ├── #/review → <ReviewPage />    // 复习
@@ -1086,7 +1111,7 @@ frontend/
 | 页面 | 路由 | API 调用 | 说明 |
 | --- | --- | --- | --- |
 | 概览 | `#/` | `/api/stats`, `/api/sessions` | 5 个统计卡片 + 快捷操作 + 入门指引 |
-| 对话 | `#/chat` | `POST /api/chat` | 自然语言交流入口：意图识别 + 分发（V1.1） |
+| 对话 | `#/chat` | `POST /api/chat` | 自然语言交流入口：LLM 工具循环分发（V1.3） |
 | 会话 | `#/sessions` | `/api/sessions` CRUD | 创建、切换当前会话 |
 | 导入 | `#/import` | `/api/import`, `/api/import/file` | 上传文件 / 粘贴文本，4 阶段视图 |
 | 复习 | `#/review` | `/api/review/start/answer/next/exit` | 6 阶段状态机，最复杂的交互 |
@@ -1300,27 +1325,38 @@ StudyForge 的演进路线是「点哪用哪 → 聊天就能学」。V1.1 已�
 
 一句话：V1.2 让"几个 Agent、各自干嘛"从纸面叙事变成真代码结构。但 supervisor 目前仍是**规则 if/else 分发**，还不是真正的一张 LangGraph 主图（interrupt 上移到主图边界，是 V2 核心）。见 [issue #1](https://github.com/qi-wutu/StudyForge/issues/1)（已关闭）。
 
-### 12.3 V1.3 / V2 — 还没做
+### 12.3 V1.3 已做 — LLM 大脑 · 通用 Agent 化
+
+V1.3 把 supervisor 从「规则路由器」升级成 **LLM 工具调用循环**，是 V1 现在的对话大脑（见 [ROADMAP](ROADMAP.md)）：
+
+- **`core/llm.py::run_agent()`** — 通用工具循环：LLM 绑定一组工具，自主决定调哪个、可多轮往复、超轮强制收尾、工具异常不崩
+- **`agent/tools.py::build_tools()`** — 把 4 个子 Agent + 通用搜索能力打包成 **7 个可调用工具**（开始复习 / 作答判分 / 退出复习 / 问答 / 薄弱分析 / 导入 / 通用搜索）
+- **`Supervisor.chat()` 重写** — 确定性安全快路（退出/下一题/导入前缀，防误判 & 不花 LLM）→ 把对话历史真正喂给 LLM → 跑工具循环 → 由工具结果决定返回卡片
+- **`nlu/` 退为确定性安全快路** — 8 类正则完整保留（`classify_intent` 测试锁定），只额外暴露 `fast_path_intent()` 拦最确定的小撮命令
+- **前端卡片加 LLM 前言气泡** — 出题/判分/分析等卡片前先出一句自然语言，更有聊天手感
+- 话题参数（"复习数据库索引"）先识别、暂不落地；单测 13 意图 + 16 工具层/循环 = 29 条
+
+### 12.4 V2 — 还没做
 
 | 版本 | 内容 | 状态 |
 | --- | --- | --- |
-| **V1.3** | LLM 辅助意图识别：规则快路 + LLM 兜底，输出结构化 `{intent, params}` | ⏳ 规划（[issue #2](https://github.com/qi-wutu/StudyForge/issues/2)） |
-| **V2** | LangGraph supervisor 主图：interrupt 上移到主图边界，多图编排 | ⏳ 规划（见 [ROADMAP](ROADMAP.md)） |
+| **V2** | LangGraph supervisor 主图：interrupt 上移到主图边界，多子图显式编排 | ⏳ 规划（见 [ROADMAP](ROADMAP.md)） |
 
-V1 vs V2 对比：
+V1（当前） vs V2（规划）：
 
-| 维度 | V1（当前） | V2（规划） |
+| 维度 | V1.3（当前） | V2（规划） |
 | --- | --- | --- |
-| 路由 | 规则 if/else 分发 | 意图识别节点 + 多图编排 |
-| 工具 | 仅有搜索 | 搜索 + 计算器 + 文档查询 + ... |
+| 路由 | LLM 工具循环动态决定（`run_agent` + `build_tools`） | LangGraph 主图按意图分发 + interrupt |
+| 工具 | 7 个（子 Agent 能力 + 通用搜索） | 搜索 + 计算器 + 文档查询 + ... |
 | 图 | 两张独立子图（review/import） | 一个主图调度多个子图 |
-| Agent | 主 Agent（规则分发）+ 子 Agent | 真正一张 LangGraph 主图调度 |
+| Agent | 主 Agent（LLM 调度）+ 子 Agent（工具化） | 真正一张 LangGraph 主图调度 |
 
-**V1 的架构设计为 V2 预留了什么：**
+**V1.3 的架构设计为 V2 预留了什么：**
 
 - 每个子 Agent 已是独立模块 + turn 接口，V2 主图可以直接把它们挂成节点 / Tool
-- `tools/` 目录可以收纳所有工具（搜索、计算、文档查询等）
-- `nlu/` 意图识别可从规则升级为 LLM 兜底，输出喂给主图
+- `run_agent()` 的多轮工具循环已把「决策 → 执行」能力验证跑通，V2 只需把它显式画成图上节点
+- `tools/` 目录可以继续收纳所有工具（搜索、计算、文档查询等）
+- `nlu/` 的快路 / `build_tools` 的工具化在 V2 主图里可直接复用
 - Session 隔离机制在多 Agent 场景下同样适用
 
 ---
@@ -1345,9 +1381,9 @@ V1 vs V2 对比：
 ```
 模块          文件数     代码行数    备注
 backend/        3        150       FastAPI 路由 + 入口
-agent/          6        900       主 Agent + 4 子 Agent + state（含 LangGraph 图/节点）
-nlu/            1         90       规则意图识别（8 类 intent）
-core/           1         60       共享 LLM + ReAct
+agent/          7       1000       主 Agent（LLM 大脑）+ tools + 4 子 Agent + state（含图/节点）
+nlu/            1         90       规则意图识别（8 类 intent）+ fast_path_intent 快路
+core/           1         70       共享 LLM + ReAct + run_agent 工具循环
 service/        2        250       无状态读服务 + 缓存
 rag/            4        200       BM25 + Hybrid + Vector + Retriever
 tools/          2        100       搜索 + ReAct
