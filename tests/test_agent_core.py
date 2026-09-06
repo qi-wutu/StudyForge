@@ -13,19 +13,16 @@ import json
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 import core.llm
+from agent.context import SessionContext
 from agent.tools import build_tools
 
 
 def make_conv(**over):
-    conv = {
-        "session_id": 1,
-        "messages": [],
-        "review_thread_id": None,
-        "pending_question": False,
-        "current_card": None,
-    }
-    conv.update(over)
-    return conv
+    """构造一个 SessionContext，支持用关键字覆盖字段（保持旧用法）。"""
+    ctx = SessionContext(session_id=1)
+    for k, v in over.items():
+        setattr(ctx, k, v)
+    return ctx
 
 
 # ========================================
@@ -97,9 +94,9 @@ def test_start_review_sets_conv_and_cards(monkeypatch):
         "kp_content": "G-M-P 分别对应...", "review_reason": "薄弱优先",
     }}
     assert fake.calls == [("start", 1)]
-    assert conv["review_thread_id"] == "thread-1"
-    assert conv["pending_question"] is True
-    assert conv["current_card"]["question"] == "请解释 GMP 模型"
+    assert conv.review_thread_id == "thread-1"
+    assert conv.pending_question is True
+    assert conv.current_card["question"] == "请解释 GMP 模型"
 
 
 def test_start_review_no_kp_returns_error(monkeypatch):
@@ -130,8 +127,8 @@ def test_submit_answer_answers_then_reads_next(monkeypatch):
     assert payload["data"]["evaluation"]["score"] == 80
     assert payload["data"]["next"]["question"].startswith("GMP 里 work stealing")
     # 下一题接管为新的待回答题
-    assert conv["pending_question"] is True
-    assert conv["current_card"]["question"].startswith("GMP 里 work stealing")
+    assert conv.pending_question is True
+    assert conv.current_card["question"].startswith("GMP 里 work stealing")
 
 
 def test_submit_answer_exit_clears_thread(monkeypatch):
@@ -145,8 +142,8 @@ def test_submit_answer_exit_clears_thread(monkeypatch):
     assert payload["card"] == "review_result"
     assert payload["data"]["exit"] is True
     assert payload["data"]["next"] is None
-    assert conv["review_thread_id"] is None
-    assert conv["pending_question"] is False
+    assert conv.review_thread_id is None
+    assert conv.pending_question is False
 
 
 def test_submit_answer_without_review_guides(monkeypatch):
@@ -170,7 +167,7 @@ def test_exit_review_idempotent(monkeypatch):
     tools = {t.name: t for t in build_tools(1, conv)}
     p2 = json.loads(tools["exit_review"].invoke({}))
     assert fake.calls == [("exit", "thread-1")]
-    assert conv["review_thread_id"] is None and conv["pending_question"] is False
+    assert conv.review_thread_id is None and conv.pending_question is False
 
 
 def test_answer_question_card(monkeypatch):
@@ -343,3 +340,39 @@ def test_supervisor_import_fast_path_short_skips_llm(monkeypatch):
     result = supervisor.chat(90002, "导入：太短")
     assert result["type"] == "chat"
     assert "导入" in result["text"]
+
+
+# ========================================
+# 四、SessionContext — 简单压缩
+# ========================================
+
+def test_compress_folds_old_into_summary():
+    ctx = make_conv()
+    for i in range(20):
+        ctx.remember("user", f"消息{i}")
+
+    ctx.compress(keep_recent=4)
+
+    assert len(ctx.messages) == 4
+    assert ctx.messages[-1]["text"] == "消息19"
+    assert "前情提要" in ctx.summary
+    assert "消息11" in ctx.summary           # 被折叠对话里最近的几条要点留在摘要里
+
+
+def test_remember_auto_compress_over_threshold():
+    ctx = make_conv()
+    for i in range(60):                       # 超过 _MAX_STORED=40 → 自动压缩
+        ctx.remember("user", f"x{i}")
+
+    assert len(ctx.messages) <= 40            # 原始历史被限幅
+    assert ctx.summary                        # 早期对话折叠进了前情提要
+
+
+def test_clear_review_is_idempotent():
+    ctx = make_conv(review_thread_id="t1", pending_question=True, current_card={"question": "q"})
+    ctx.clear_review()
+    assert ctx.review_thread_id is None
+    assert ctx.pending_question is False
+    assert ctx.current_card is None
+    ctx.clear_review()                        # 幂等，再清一次也 OK
+    assert ctx.review_thread_id is None

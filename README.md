@@ -67,6 +67,7 @@ StudyForge/
 │   ├── qa_agent.py         # 问答子 Agent（混合检索 + grounded 回答）
 │   ├── analyzer.py         # 分析子 Agent（统计 + LLM 报告）
 │   ├── tools.py            # Agent 工具集（build_tools：把子 Agent 能力包成 7 个工具）
+│   ├── context.py          # 会话状态盒子 SessionContext（V1.5：+ 简单压缩）
 │   └── state.py            # Agent 状态定义
 │
 ├── core/                   # 跨 Agent 共享底座
@@ -378,6 +379,13 @@ python-dotenv
 - [x] `Supervisor.chat()` 重写为 LLM 工具循环；对话历史真正喂给模型（记得你刚说过/刚导入的）
 - [x] `nlu/` 退为确定性安全快路：8 类正则保留（`classify_intent` 测试锁定），只拦「退出/下一题/导入」
 - [x] 前端卡片带 LLM 前言气泡；单测 13 意图 + 16 工具层/循环 = 29 条
+
+### V1.5（Context 管理 · 简单压缩）
+
+- [x] `agent/context.py::SessionContext`：一个 session 的「状态盒子」，字段带类型/方法，不再 `conv["key"]` 魔改
+- [x] 简单压缩：历史超阈值时最老一批折叠成「前情提要」摘要，长续聊不掉脉络（V1.3 的 `[-8:]` 会直接丢更早对话）
+- [x] Supervisor / build_tools 重构为 `ctx.set_review()` / `clear_review()` / `remember()`，行为零变化
+- [x] 单测 29 → 32（新增 context 压缩/清理用例）
 
 ### 后续想法
 

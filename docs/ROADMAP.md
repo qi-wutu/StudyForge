@@ -67,6 +67,17 @@
 
 一句话：V1.3 让 supervisor 从"背下来的路由表"变成**会看场景下命令的 LLM 调度器**——你说闲聊它陪聊，说"开始复习/考考我 GMP"它就自己调子 Agent 出题。离 V2 只差"用一张 LangGraph 主图 + interrupt 显式编排这套多轮调度"。
 
+### V1.5（本阶段）— Context 管理 + 简单压缩
+
+V1.3 把对话状态散在 supervisor._convs 的裸 dict 里，靠 `conv["key"]` 魔改；V1.5 把它收敛成一个**类型化的 `SessionContext`（状态盒子）**，并加**简单压缩**，让长对话不被硬截断：
+
+- **`agent/context.py::SessionContext`**：一个 session 的「状态盒子」——`messages`（对话历史）+ `review_thread_id` / `pending_question` / `current_card`（复习态）+ 方法（`remember` / `set_review` / `clear_review`）。字段有类型、有方法，写错立刻报错，不再静默出 bug。
+- **简单压缩**：对话历史超过阈值时，最老的一批自动折叠成一句「前情提要」摘要（保留最近原文），长续聊也能保留大概脉络——不再像 V1.3 那样只 `[-8:]` 把更早的对话直接丢掉。纯确定性、无 LLM 调用（重对话热路径不花钱）。
+- **Supervisor / build_tools 重构**：所有 `conv["x"] = y` 改为 `ctx.set_review()` / `ctx.clear_review()` / `ctx.remember()`，行为零变化。
+- 单测 29 → 32（新增 3 条 context 压缩/清理用例）
+
+一句话：V1.5 把"乱兜里的对话状态"换成"有分格的盒子"，还给长对话补了个不掉脉络的简单压缩。
+
 ### V1 现在的交互方式
 
 两条车道并行，数据完全共享：

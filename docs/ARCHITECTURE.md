@@ -1,7 +1,7 @@
 # StudyForge 架构文档
 
-> 版本：2.2（V1.3 LLM 大脑 · Web 版）  
-> 最后更新：2026-09-03
+> 版本：2.3（V1.5 Context 管理 · Web 版）  
+> 最后更新：2026-09-06
 
 ---
 
@@ -193,7 +193,8 @@ V1.2 之前，代码是「`graph/` 上帝模块 + 一堆 service」，负责调�
 | 文件 | 角色 | 职责 / 公开接口 |
 | --- | --- | --- |
 | `supervisor.py` | 主 Agent（LLM 大脑） | `Supervisor.chat(session_id, message)`：确定性安全快路 → LLM 工具循环 → 返回结构化结果 |
-| `tools.py` | 工具集 | `build_tools(session_id, conv)`：把 4 个子 Agent + 统计能力打包成 7 个可调用工具 |
+| `context.py` | 会话上下文 | `SessionContext`：每个会话一个「状态盒子」（messages / review 态 / 当前题目卡 + 简单压缩） |
+| `tools.py` | 工具集 | `build_tools(session_id, ctx)`：把 4 个子 Agent + 统计能力打包成 7 个可调用工具 |
 | `review_agent.py` | 复习子 Agent | LangGraph 循环图（调度/出题/判分）+ `ReviewAgent`：`start/answer/next/exit` |
 | `import_agent.py` | 导入子 Agent | `import_content(session_id, content, title)` → `{document_id, knowledge_points}` |
 | `qa_agent.py` | 问答子 Agent | `answer_question(session_id, question)` → `(text, has_context)` |

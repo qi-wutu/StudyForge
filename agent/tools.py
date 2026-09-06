@@ -20,13 +20,12 @@ from agent.review_agent import review_agent
 from service import stats_service
 
 
-def build_tools(session_id: int, conv: dict) -> list:
+def build_tools(session_id: int, ctx) -> list:
     """为一次对话构造该会话可用的工具集（6 个 Agent 工具 + 通用搜索）。
 
     Args:
         session_id: 当前会话 ID（工具闭包持有，不暴露给 LLM）
-        conv:       Supervisor 持有的 Conversation：
-                    {session_id, messages, review_thread_id, pending_question, current_card}
+        ctx:        Supervisor 持有的 SessionContext（agent/context.py）。
                     工具的闭包读写它，保证复习线程状态始终与对话同步。
 
     Returns:
@@ -48,29 +47,23 @@ def build_tools(session_id: int, conv: dict) -> list:
             "kp_content": data.get("kp_content", ""),
             "review_reason": data.get("review_reason", ""),
         }
-        conv["review_thread_id"] = data["thread_id"]
-        conv["pending_question"] = True
-        conv["current_card"] = card
+        ctx.set_review(data["thread_id"], card)
         return json.dumps({"ok": True, "card": "question", "data": card}, ensure_ascii=False)
 
     @tool
     def submit_answer(answer: str) -> str:
         """提交对当前复习题的回答：AI 判分 + 评语，并接出下一题。用户在复习中针对当前这道题作答时调用。"""
-        thread = conv.get("review_thread_id")
+        thread = ctx.review_thread_id
         if not thread:
             return json.dumps({"ok": False, "card": "chat", "text": "现在没有进行中的复习。说「开始复习」先出一题再作答。"}, ensure_ascii=False)
         try:
             res = review_agent.submit_answer(thread, answer)
         except Exception as e:  # noqa: BLE001 —— thread 可能已过期
-            conv["review_thread_id"] = None
-            conv["pending_question"] = False
-            conv["current_card"] = None
+            ctx.clear_review()
             return json.dumps({"ok": False, "card": "chat", "text": f"这次复习好像失效了（{e}），说「开始复习」重开一轮吧。"}, ensure_ascii=False)
 
         if res.get("exit"):
-            conv["review_thread_id"] = None
-            conv["pending_question"] = False
-            conv["current_card"] = None
+            ctx.clear_review()
             return json.dumps({
                 "ok": True, "card": "review_result",
                 "data": {"evaluation": res.get("evaluation", {}), "exit": True, "next": None},
@@ -85,14 +78,14 @@ def build_tools(session_id: int, conv: dict) -> list:
                 "kp_content": nxt.get("kp_content", ""),
                 "review_reason": nxt.get("review_reason", ""),
             }
-        except Exception:  # noqa: BLE001
-            next_card = None
-            conv["review_thread_id"] = None
-            conv["pending_question"] = False
-            conv["current_card"] = None
+        except Exception:  # noqa: BLE001 —— 下一题失效则一并清掉整个复习态
+            ctx.clear_review()
+            return json.dumps({
+                "ok": True, "card": "review_result",
+                "data": {"evaluation": res.get("evaluation", {}), "exit": False, "next": None},
+            }, ensure_ascii=False)
 
-        conv["pending_question"] = next_card is not None
-        conv["current_card"] = next_card
+        ctx.set_review(thread, next_card)
         return json.dumps({
             "ok": True, "card": "review_result",
             "data": {"evaluation": res.get("evaluation", {}), "exit": False, "next": next_card},
@@ -101,13 +94,11 @@ def build_tools(session_id: int, conv: dict) -> list:
     @tool
     def exit_review() -> str:
         """主动结束当前复习。用户在复习中想停下来说「退出 / 结束 / 算了」时调用。"""
-        thread = conv.get("review_thread_id")
+        thread = ctx.review_thread_id
         if not thread:
             return json.dumps({"ok": True, "card": "chat", "text": "现在没有进行中的复习。说「开始复习」随时能练。"}, ensure_ascii=False)
         review_agent.exit(thread)
-        conv["review_thread_id"] = None
-        conv["pending_question"] = False
-        conv["current_card"] = None
+        ctx.clear_review()
         return json.dumps({"ok": True, "card": "chat", "text": "好，复习结束了。想提问、看薄弱分析或再来一轮都可以随时说。"}, ensure_ascii=False)
 
     # ---------- 问答子 Agent ----------

@@ -19,32 +19,27 @@ import json
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from agent.context import HISTORY_MAX, SessionContext
 from agent.tools import build_tools
 from core.llm import run_agent
 from nlu.intent import extract_import_content, fast_path_intent
 
-# 喂给 LLM 的最近历史条数上限（防上下文膨胀）
-_HISTORY_MAX = 8
+# 喂给 LLM 的最近历史条数上限
+_HISTORY_MAX = HISTORY_MAX
 
 
 class Supervisor:
     """主 Agent：LLM 大脑 + 工具循环，调度 4 个子 Agent 的能力"""
 
     def __init__(self):
-        # session_id -> Conversation
-        self._convs: dict[int, dict] = {}
+        # session_id -> SessionContext（每个会话一个「状态盒子」）
+        self._convs: dict[int, SessionContext] = {}
 
     # ---------- 会话状态 ----------
 
-    def _get_conv(self, session_id: int) -> dict:
+    def _get_conv(self, session_id: int) -> SessionContext:
         if session_id not in self._convs:
-            self._convs[session_id] = {
-                "session_id": session_id,
-                "messages": [],            # [{role, text}] LLM 友好历史（供展示 + 回填模型）
-                "review_thread_id": None,  # 当前活跃复习的 LangGraph thread
-                "pending_question": False,  # 是否有一道待回答的题
-                "current_card": None,       # 当前待回答题目的卡片 {question, kp_title, ...}
-            }
+            self._convs[session_id] = SessionContext(session_id=session_id)
         return self._convs[session_id]
 
     # ---------- 入口 ----------
@@ -60,9 +55,9 @@ class Supervisor:
             return self._fast_path(conv, fast, message)
 
         # 2) 常规路径：LLM 工具调用循环
-        conv["messages"].append({"role": "user", "text": message})
+        conv.remember("user", message)   # 超长历史会被自动压缩成前情提要，不无限膨胀
         messages = [SystemMessage(content=self._system_prompt(conv))]
-        messages += self._to_history(conv["messages"][-_HISTORY_MAX:])
+        messages += self._to_history(conv.messages[-_HISTORY_MAX:])
         messages.append(HumanMessage(content=message))
 
         final_text, tool_log = run_agent(
@@ -74,35 +69,35 @@ class Supervisor:
         result = self._map_result(final_text, tool_log)
 
         # 4) 记录一条 assistant 自然语言回复（不落整张卡片，避免历史被撑爆）
-        self._remember(conv, self._assistant_text(result))
+        conv.remember("assistant", self._assistant_text(result))
         return result
 
     # ---------- 确定性安全快路 ----------
 
-    def _fast_path(self, conv: dict, intent: str, message: str) -> dict:
+    def _fast_path(self, conv, intent: str, message: str) -> dict:
         """退出 / 下一题 / 导入 —— 复用 build_tools 里的同名工具，保持行为单一来源。"""
-        conv["messages"].append({"role": "user", "text": message})
-        tools = {t.name: t for t in build_tools(conv["session_id"], conv)}
+        conv.remember("user", message)
+        tools = {t.name: t for t in build_tools(conv.session_id, conv)}
 
         if intent == "exit_review":
             result_str = tools["exit_review"].invoke({})
         elif intent == "next":
-            if conv.get("review_thread_id"):
+            if conv.reviewing:
                 text = "答完当前这道题，我会自动接下一题。你也可以直接输入答案，或说「退出」结束复习。"
             else:
                 text = "还没开始复习呢。说「开始复习」我就出题。"
-            self._remember(conv, text)
+            conv.remember("assistant", text)
             return {"type": "chat", "text": text}
         else:  # import —— 前缀确定但内容要再校验一次
             content = extract_import_content(message)
             if not content:
                 text = "把内容发我就行，比如「导入：xxx」。内容太短的话，直接去「导入」页粘贴更顺手。"
-                self._remember(conv, text)
+                conv.remember("assistant", text)
                 return {"type": "chat", "text": text}
             result_str = tools["import_content"].invoke({"content": content})
 
         result = self._card_to_result(json.loads(result_str), final_text="")
-        self._remember(conv, self._assistant_text(result))
+        conv.remember("assistant", self._assistant_text(result))
         return result
 
     # ---------- 结果映射 ----------
@@ -159,15 +154,17 @@ class Supervisor:
     # ---------- 系统提示 ----------
 
     @staticmethod
-    def _system_prompt(conv: dict) -> str:
-        reviewing = conv.get("review_thread_id") is not None
-        card = conv.get("current_card") or {}
+    def _system_prompt(conv) -> str:
+        reviewing = conv.reviewing
+        card = conv.current_card or {}
         pending = (
             f"知识点「{card.get('kp_title', '')}」出的题：{card.get('question', '')}"
             if reviewing and card.get("question")
             else "无"
         )
-        return f"""你是 StudyForge 的 AI 学习教练，陪用户复习 / 答疑 / 做薄弱分析。
+        summary = conv.summary_note
+        summary_block = f"\n{summary}\n" if summary else ""
+        return f"""你是 StudyForge 的 AI 学习教练，陪用户复习 / 答疑 / 做薄弱分析。{summary_block}
 
 你只能用下面 7 个工具获取能力。**用户的资料、复习进度、答题记录等状态，只能靠调用工具拿到，绝不凭空猜测、绝不编造。** 看到明确的动作请求时，先调用对应工具，再按工具返回的内容向用户总结：
 
@@ -206,10 +203,10 @@ class Supervisor:
         return out
 
     @staticmethod
-    def _remember(conv: dict, text: str):
+    def _remember(conv, text: str):
         """记一条 assistant 自然语言回复（历史只存文本，卡片数据不进历史）。"""
         if text:
-            conv["messages"].append({"role": "assistant", "text": text})
+            conv.remember("assistant", text)
 
     @staticmethod
     def _assistant_text(result: dict) -> str:
