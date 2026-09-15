@@ -1,13 +1,13 @@
 # StudyForge 架构文档
 
-> 版本：2.3（V1.5 Context 管理 · Web 版）  
+> 版本：2.4（V1.6 Context token 预算压缩 · Web 版）  
 > 最后更新：2026-09-15
 
 ---
 
-## 架构现状一句话（V1.5）
+## 架构现状一句话（V1.6）
 
-V1.3 把 supervisor 从「规则路由器」升级成 **LLM 大脑**——它会自己决定调哪个能力、能记得你刚说过/刚导入的。V1.5 又把每个会话的对话/复习状态收进类型化 **`SessionContext`（状态盒子）**，并加**简单压缩**（历史超阈值折叠成"前情提要"，不再硬丢）。底层机制**没变**——LangGraph 复习循环图、混合检索、LLM 判分、Agent Memory 全部原样保留，只是顶层调度换成了 **LLM 工具调用循环**：
+V1.3 把 supervisor 从「规则路由器」升级成 **LLM 大脑**——它会自己决定调哪个能力、能记得你刚说过/刚导入的。V1.5 又把每个会话的对话/复习状态收进类型化 **`SessionContext`（状态盒子）**；V1.6 把它的压缩策略从「按消息条数」换成「**按 token 预算**」，并把摘要升级为 **LLM 摘要 + 确定性兜底**的滚动摘要。底层机制**没变**——LangGraph 复习循环图、混合检索、LLM 判分、Agent Memory 全部原样保留，只是顶层调度换成了 **LLM 工具调用循环**：
 
 ```
 HTTP 层   backend/router.py
@@ -15,7 +15,7 @@ HTTP 层   backend/router.py
    ▼
 Agent 层  agent/
    supervisor（主 Agent：LLM 大脑）    ←── nlu/intent.py 只拦「退出/下一题/导入」确定性快路
-   │  SessionContext（状态盒子：对话历史 + 复习态 + 当前题卡，带简单压缩）
+   │  SessionContext（状态盒子：对话历史 + 复习态 + 当前题卡，按 token 预算压缩）
    │  core/llm.py::run_agent() 跑工具循环：LLM 自主决定调哪个、多轮往复
    ▼
    agent/tools.py::build_tools() —— 把 4 个子 Agent 的能力打包成 7 个可调用工具
@@ -36,7 +36,7 @@ core/（get_llm + run_agent） rag/（BM25 + 向量） tools/（搜索） storag
 - 图共享状态 `AgentState` 在 `agent/state.py`
 - 通用工具循环 `run_agent()` 在 `core/llm.py`；工具打包 `build_tools()` 在 `agent/tools.py`
 
-> 演进叙事：V1.1 给 V1 加了对话皮层，V1.2 把代码重构成「主 Agent + 4 子 Agent」的多 Agent 结构，V1.3 把顶层 supervisor 从规则 if/else 升级成 **LLM 工具调用循环**，V1.5 再把会话状态收敛成 `SessionContext` 并加简单压缩（见第 3.2 / 12 节）。现在这套「决策 → 调工具 → 多轮」跑在命令式循环里，把它画成一张真正的 LangGraph 主图（interrupt 上移到主图边界）是 V2 的核心。
+> 演进叙事：V1.1 给 V1 加了对话皮层，V1.2 把代码重构成「主 Agent + 4 子 Agent」的多 Agent 结构，V1.3 把顶层 supervisor 从规则 if/else 升级成 **LLM 工具调用循环**，V1.5 把会话状态收敛成 `SessionContext`，V1.6 再把它的压缩从「条数」改成「token 预算」（见第 3.2 / 12 节）。现在这套「决策 → 调工具 → 多轮」跑在命令式循环里，把它画成一张真正的 LangGraph 主图（interrupt 上移到主图边界）是 V2 的核心。
 
 ---
 
@@ -106,7 +106,7 @@ StudyForge 是一个 **AI 自适应复习系统**，核心业务流程是：
 │  └──────────────────────────────┬──────────────────────────────────┘  │
 │                                 ▼                                    │
 │  ┌─────────────────────────────────────────────────────────────────┐  │
-│  │ Agent 层  agent/  （V1.5：LLM 大脑）                             │  │
+│  │ Agent 层  agent/  （V1.6：LLM 大脑 + token 预算上下文）           │  │
 │  │   supervisor  主 Agent：读对话历史 → LLM 决定调哪个工具     │  │
 │  │   tools.build_tools()   把 4 个子 Agent 打包成 7 个工具     │  │
 │  │   core.llm.run_agent()  跑多轮工具循环（core/llm.py）       │  │
@@ -194,7 +194,7 @@ V1.2 之前，代码是「`graph/` 上帝模块 + 一堆 service」，负责调�
 | 文件 | 角色 | 职责 / 公开接口 |
 | --- | --- | --- |
 | `supervisor.py` | 主 Agent（LLM 大脑） | `Supervisor.chat(session_id, message)`：确定性安全快路 → LLM 工具循环 → 返回结构化结果 |
-| `context.py` | 会话上下文 | `SessionContext`：每个会话一个「状态盒子」（messages / review 态 / 当前题目卡 + 简单压缩） |
+| `context.py` | 会话上下文 | `SessionContext`：每个会话一个「状态盒子」（messages / review 态 / 当前题目卡 + token 预算压缩） |
 | `tools.py` | 工具集 | `build_tools(session_id, ctx)`：把 4 个子 Agent + 统计能力打包成 7 个可调用工具 |
 | `review_agent.py` | 复习子 Agent | LangGraph 循环图（调度/出题/判分）+ `ReviewAgent`：`start/answer/next/exit` |
 | `import_agent.py` | 导入子 Agent | `import_content(session_id, content, title)` → `{document_id, knowledge_points}` |
@@ -204,7 +204,7 @@ V1.2 之前，代码是「`graph/` 上帝模块 + 一堆 service」，负责调�
 
 > 复习 / 导入仍用 LangGraph，只是**图定义和节点函数跟着对应 Agent 走**（`_build_review_graph()` / `import_agent` 的 planner 图），节点机制在第 7 节详述。`graph/` 目录已在 V1.2 删除。
 
-#### Supervisor：主 Agent（V1.5 LLM 大脑 + SessionContext）
+#### Supervisor：主 Agent（V1.6 LLM 大脑 + SessionContext）
 
 V1.3 的 supervisor 不再是规则路由器，而是跑在 **LLM 工具调用循环** 上的"大脑"；V1.5 起它读写的是一个类型化的 `SessionContext`，不再裸改 dict：
 
@@ -217,24 +217,26 @@ class Supervisor:
         fast = fast_path_intent(message)           # ① 确定性安全快路（薄薄一层）
         if fast is not None:
             return self._fast_path(ctx, fast, message)
-        ctx.remember("user", message)              # 历史超阈值自动压缩成「前情提要」
         messages = [SystemMessage(content=self._system_prompt(ctx))]
-        messages += self._to_history(ctx.messages[-8:])   # ② 最近对话喂给 LLM
+        messages += self._to_history(ctx.messages)  # ② 历史已按 token 预算限幅，不再切 [-8:]
         messages.append(HumanMessage(content=message))
         final_text, tool_log = run_agent(
             messages, build_tools(session_id, ctx),           # ③ 跑工具循环
         )
-        return self._map_result(final_text, tool_log)         # ④ 按最后一张卡定 type
+        result = self._map_result(final_text, tool_log)       # ④ 按最后一张卡定 type
+        ctx.remember("user", message)             # ⑤ 记历史放在调用之后——否则当前消息
+        ctx.remember("assistant", ...)            #    会既进历史、又当新消息各发一次
+        return result
 ```
 
 `supervisor.chat()` 内部做四件事：
 
 1. **确定性安全快路** — `nlu/intent.py::fast_path_intent()` 只拦「退出 / 下一题 / 导入前缀」三种最确定、最不该让 LLM 猜的命令，不花 LLM。
-2. **对话历史真正喂给 LLM** — V1.1 的历史只存展示文本、从未给模型；V1.3 拼 `[System 提示 + 最近 8 条对话 + 当前消息]`，所以它记得你刚说过/刚导入的。
+2. **对话历史真正喂给 LLM** — V1.1 的历史只存展示文本、从未给模型；V1.3 起拼 `[System 提示 + 历史对话 + 当前消息]`，所以它记得你刚说过/刚导入的。V1.6 去掉了 `[-8:]` 切片：历史长度已由 `SessionContext` 按 token 预算管住，再叠一层条数切片就是多余的补丁。
 3. **跑工具循环** — `run_agent()`（`core/llm.py`）里 LLM 绑定 `build_tools()` 的 7 个工具，自主决定调哪个、可多轮往复、超轮强制收尾。
 4. **结果映射** — 由 `tool_log` 里"最后一张结构化卡片"决定返回 type；question / review_result / analysis / imported 卡额外带 LLM 的最终话作前言气泡。
 
-**会话状态：`SessionContext`（V1.5）**
+**会话状态：`SessionContext`（V1.5 状态盒子 / V1.6 token 预算）**
 
 每个 session 一个 `agent/context.py::SessionContext`——把原先 supervisor 裸 dict 里的状态收成有类型、有方法的「状态盒子」：
 
@@ -246,16 +248,47 @@ class SessionContext:
     review_thread_id: str | None = None            # 当前活跃复习的 LangGraph thread
     pending_question: bool = False                 # 是否有一道待回答的题
     current_card: dict | None = None               # 当前待回答题目的卡片
-    summary: str = ""                              # 前情提要（被折叠的早期对话摘要）
+    summary: str = ""                              # 前情提要正文（不含包装）
 
-    def remember(self, role, text): ...            # 记一条对话；超阈值自动 compress()
+    def remember(self, role, text): ...            # 记一条对话；超预算自动 compress()
     def set_review(self, thread_id, card): ...     # 进入/更新复习态
     def clear_review(self): ...                    # 退出复习、清空题卡
-    def compress(self, keep_recent=8): ...         # 简单压缩（见下）
+    def compress(self) -> str: ...                 # token 预算压缩（见下）
 ```
 
 - **为什么**：`conv["review_thread_id"] = x` 这种魔改 key 写错不报错、静默出 bug；换成属性/方法后写错立刻报错，且可测、可扩展。
-- **简单压缩**：`messages` 超过 `_MAX_STORED=40` 时，最老的一批折叠成一句「前情提要」（保留最近原文），拼进 System Prompt。**纯确定性、无 LLM 调用**——重对话热路径不花钱。对比 V1.3 只做 `[-8:]` 硬截断，等于把更早的对话直接丢掉；压缩留住脉络而不无限膨胀。
+
+**长度控制：从「条数」到「token 预算」（V1.6）**
+
+V1.5 按**消息条数**压缩（超 40 条折叠最老的，只留最近 8 条），再叠一层 `[-8:]` 切片。问题是条数根本不反映成本——40 条可能是 40 句「好的」（几百 token），也可能是 40 段粘贴的资料（几万 token），那层切片就是为补这个洞打的补丁。
+
+V1.6 换成 token 预算，四个常量互相咬合：
+
+```python
+MAX_MSG_TOKENS       = 1000    # 单条消息上限：防一次粘贴巨长文本撑爆预算
+HISTORY_TOKEN_BUDGET = 8000    # 历史总预算：超过即触发压缩
+KEEP_RECENT_TOKENS   = 4000    # 压缩时保留的最近原文预算
+SUMMARY_TOKEN_BUDGET = 1000    # 摘要自身预算
+```
+
+两条**不变量**（模块加载时 assert 锁住）：
+
+1. `KEEP_RECENT + SUMMARY < HISTORY` —— 压完（≤5000）必低于触发线（8000）。否则会「压完立刻再压」，摘要被反复覆盖、越压越丢。
+2. `MAX_MSG ≤ KEEP_RECENT` —— 保证压缩时至少留得下最后一条，保留段不会为空。
+
+计数用 `tiktoken` 的 `cl100k_base`，封在单点函数 `_count_tokens()` 里（**将来换精确分词器只改这一个函数**）。它并非 DeepSeek 官方分词器，数中文偏保守（估得偏大）——对「预算护栏」而言偏大是安全方向。实测中文 ≈1 token/字、英文 ≈4 字符/token；而本项目每轮固定开销（System Prompt 743 + 7 个工具定义 423）约 1166 tokens，一轮问答约 300~600 tokens，所以 8000 的预算 ≈ 12~15 轮对话，占 DeepSeek 64k 窗口约 13%。
+
+**摘要：LLM 优先 + 确定性兜底（V1.6）**
+
+```python
+def _summarize(dropped, prev_summary):
+    return _summarize_llm(dropped, prev_summary) or _summarize_fallback(dropped, prev_summary)
+```
+
+- **必须是滚动摘要**：`prev_summary` 也一并喂给 LLM 合并。V1.5 是 `self.summary = ...` 覆盖式，第二次压缩会把第一版摘要直接丢掉；现在旧摘要和新折叠的对话一起合并，早期脉络不再被覆盖。
+- **必须有兜底**：`compress()` 是在聊天主流程里**同步**调用的（`remember()` 内），LLM 一失败就是整个请求崩。所以 `_summarize_llm` 把异常全部吞掉返回 `None`，回退到 V1.5 那套确定性折叠（取用户原话要点拼接），聊天永不因摘要失败而挂。
+- **成本**：压缩十几轮才触发一次，所以那次 LLM 调用的 ~1.5s 用户基本感知不到；单次成本可忽略。
+
 - **不持久化**：进程内，服务重启即失——与 V1 `_active_reviews` / MemorySaver 同一既定取舍，非缺陷。
 
 **工具循环里的调度**（路由决策权已从规则表交给 LLM，下表是它"通常会这么选"）：
@@ -296,7 +329,7 @@ V1.3 之后，supervisor 的**主流程不再走 `classify_intent`**——对话
 - **8 类正则完整保留**（`classify_intent`，13 个用例锁在 `tests/test_intent.py`）——V1.1 的规则能力没丢，只是不再当主路由。
 - **`fast_path_intent()` 确定性快路**——只拦「退出 / 下一题 / 导入」这类绝不该让 LLM 猜的命令，不花 LLM、防误判。
 
-规则快路 = **零 LLM 调用、可预测、可单测**。V1.3/V1.5 新增的工具层 / 循环 / 上下文单测在 `tests/test_agent_core.py`（19 个用例，mock 底层子 Agent 与 LLM），加 `tests/test_intent.py` 的 13 个意图用例，共 32 条。
+规则快路 = **零 LLM 调用、可预测、可单测**。V1.3/V1.5/V1.6 新增的工具层 / 循环 / 上下文单测在 `tests/test_agent_core.py`（27 个用例，mock 底层子 Agent 与 LLM），加 `tests/test_intent.py` 的 13 个意图用例，共 40 条。
 
 #### ReviewAgent（复习子 Agent）详解
 
@@ -774,7 +807,7 @@ db = scoped_session(SessionLocal)
 | `_analyze_cache` | 分析结果 dict | `service/stats_service.py` | 按 session_id | 15 分钟 | 新答题记录 |
 | `_dashboard_cache` | Dashboard 数据 dict | `service/stats_service.py` | 按 session_id | 15 分钟 | 新答题记录 |
 | `_active_reviews` | thread 映射 dict | `agent/review_agent.py` | 进程全局 | 复习期间 | 复习结束/服务重启 |
-| `supervisor._convs` | SessionContext 状态盒子（对话历史 + 复习态 + 前情提要） | `agent/supervisor.py` | 按 session_id | 对话期间 | 服务重启 |
+| `supervisor._convs` | SessionContext 状态盒子（对话历史 + 复习态 + 前情提要；按 token 预算限幅） | `agent/supervisor.py` | 按 session_id | 对话期间 | 服务重启 |
 | MemorySaver | AgentState 快照 | `agent/review_agent.py`（图编译时挂载） | 按 thread_id | 进程生命周期 | 服务重启 |
 
 ### 6.2 为什么不用 Redis？
@@ -1371,7 +1404,18 @@ V1.3 把 supervisor 从「规则路由器」升级成 **LLM 工具调用循环**
 - **Supervisor / build_tools 重构** — 所有 `conv["x"] = y` 改为 `ctx.set_review()` / `ctx.clear_review()` / `ctx.remember()`，行为零变化。
 - 单测 29 → 32（新增 3 条 context 压缩 / 清理用例）
 
-### 12.5 V2 — 还没做
+### 12.5 V1.6 已做 — Context token 预算压缩
+
+把 `SessionContext` 的长度控制从「按消息条数」换成「**按 token 预算**」，并把摘要从机械拼接升级成 **LLM 摘要 + 确定性兜底**的滚动摘要：
+
+- **四个 token 常量 + 两条不变量** — `MAX_MSG_TOKENS=1000` / `HISTORY_TOKEN_BUDGET=8000` / `KEEP_RECENT_TOKENS=4000` / `SUMMARY_TOKEN_BUDGET=1000`；不变量 `KEEP_RECENT + SUMMARY < HISTORY`（否则压完立刻再压、摘要被反复覆盖）与 `MAX_MSG ≤ KEEP_RECENT`（保证至少留一条），模块加载时 assert 锁住。
+- **为什么换** — 条数不反映成本：40 条可能是 40 句「好的」，也可能是 40 段粘贴的资料。换成 token 后，V1.5 为补这个洞叠的 `[-8:]` 切片可以直接删掉。
+- **分词器** — `tiktoken` 的 `cl100k_base`，封在单点函数 `_count_tokens()` 里（换精确分词器只改一处）。中文 ≈1 token/字，非 DeepSeek 官方分词器，估得偏保守（偏大）——对预算护栏是安全方向。
+- **LLM 摘要 + 兜底** — `_summarize_llm()` 把「旧摘要 + 新折叠的对话」一起交给 LLM 合并（**滚动摘要**，修掉 V1.5 覆盖式丢摘要的缺陷）；异常全吞返回 `None`，回退 V1.5 的确定性折叠——压缩跑在聊天主流程里，绝不能因摘要失败把请求带崩。
+- **顺带修 bug** — `supervisor.chat()` 原先把当前用户消息既放进历史、又作为新消息各发一次；现在把 `remember()` 挪到工具循环之后，当前消息只出现一次，且以完整原文（不被单条上限截断）发送。
+- 单测 32 → 40（新增 8 条：token 计数 / 单条截断 / 预算触发 / 不变量 / LLM 摘要 / 兜底 / 滚动合并 / 历史拼装）
+
+### 12.6 V2 — 还没做
 
 | 版本 | 内容 | 状态 |
 | --- | --- | --- |
@@ -1379,18 +1423,18 @@ V1.3 把 supervisor 从「规则路由器」升级成 **LLM 工具调用循环**
 
 V1（当前） vs V2（规划）：
 
-| 维度 | V1.5（当前） | V2（规划） |
+| 维度 | V1.6（当前） | V2（规划） |
 | --- | --- | --- |
 | 路由 | LLM 工具循环动态决定（`run_agent` + `build_tools`） | LangGraph 主图按意图分发 + interrupt |
 | 工具 | 7 个（子 Agent 能力 + 通用搜索） | 搜索 + 计算器 + 文档查询 + ... |
 | 图 | 两张独立子图（review/import） | 一个主图调度多个子图 |
 | Agent | 主 Agent（LLM 调度）+ 子 Agent（工具化） | 真正一张 LangGraph 主图调度 |
 
-**V1.3/V1.5 的架构设计为 V2 预留了什么：**
+**V1.3/V1.5/V1.6 的架构设计为 V2 预留了什么：**
 
 - 每个子 Agent 已是独立模块 + turn 接口，V2 主图可以直接把它们挂成节点 / Tool
 - `run_agent()` 的多轮工具循环已把「决策 → 执行」能力验证跑通，V2 只需把它显式画成图上节点
-- `SessionContext` 已把会话态归到一处，天然可作为 V2 主图 state 的落点
+- `SessionContext` 已把会话态归到一处，天然可作为 V2 主图 state 的落点；其 token 预算也让"主图 state 会膨胀多少"变成可算的
 - `tools/` 目录可以继续收纳所有工具（搜索、计算、文档查询等）
 - `nlu/` 的快路 / `build_tools` 的工具化在 V2 主图里可直接复用
 - Session 隔离机制在多 Agent 场景下同样适用

@@ -67,7 +67,7 @@ StudyForge/
 │   ├── qa_agent.py         # 问答子 Agent（混合检索 + grounded 回答）
 │   ├── analyzer.py         # 分析子 Agent（统计 + LLM 报告）
 │   ├── tools.py            # Agent 工具集（build_tools：把子 Agent 能力包成 7 个工具）
-│   ├── context.py          # 会话状态盒子 SessionContext（V1.5：+ 简单压缩）
+│   ├── context.py          # 会话状态盒子 SessionContext（V1.6：+ token 预算压缩）
 │   └── state.py            # Agent 状态定义
 │
 ├── core/                   # 跨 Agent 共享底座
@@ -386,6 +386,13 @@ python-dotenv
 - [x] 简单压缩：历史超阈值时最老一批折叠成「前情提要」摘要，长续聊不掉脉络（V1.3 的 `[-8:]` 会直接丢更早对话）
 - [x] Supervisor / build_tools 重构为 `ctx.set_review()` / `clear_review()` / `remember()`，行为零变化
 - [x] 单测 29 → 32（新增 context 压缩/清理用例）
+
+### V1.6（Context token 预算 + LLM 摘要）
+
+- [x] 压缩策略从「按消息条数」换成「**按 token 预算**」（`tiktoken` 计数；四个预算常量 + 两条不变量用 assert 锁住）
+- [x] 摘要升级为 **LLM 摘要 + 确定性兜底**的**滚动摘要**：旧摘要与新折叠对话一起合并，不再被覆盖丢掉；LLM 失败自动回退，聊天主流程不受影响
+- [x] 删掉 V1.5 为补条数漏洞叠的 `[-8:]` 切片；顺带修掉「当前消息被重复发送两次」
+- [x] 单测 32 → 40（新增 token 计数 / 单条截断 / 预算触发 / 不变量 / LLM 摘要 / 兜底 / 滚动合并 / 历史拼装）
 
 ### 后续想法
 
