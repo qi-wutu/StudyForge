@@ -1,31 +1,30 @@
-"""主 Agent — Supervisor（V1.3：LLM 大脑）
+"""主 Agent — Supervisor（V1.3：LLM 大脑 / V1.6：token 预算历史）
 
 从 V1.1 的「规则路由器」升级为「LLM 工具调用循环」：
 
     Supervisor.chat(session_id, message)
         → 确定性安全快路（退出/下一题/导入前缀——避免误判、不花 LLM）
-        → 拼 [System 提示 + 最近对话历史 + 当前消息]
+        → 拼 [System 提示 + 历史对话 + 当前消息]
         → run_agent() 跑工具循环：LLM 自主决定调 4 个子 Agent 的能力 / 通用搜索 / 直接答
         → 按 tool_log 里最后一张卡片决定返回 type；text 前言来自 LLM 的最终话
-        → 把自然语言回复记进对话历史，供下一轮喂回模型
+        → 把用户原话 + 自然语言回复记进对话历史，供下一轮喂回模型
 
 对话历史真正喂给了 LLM（V1.1 只记展示文本、从未给模型）——
 这是「能跟他聊天、像通用 Agent」的关键。
 
-每个 session 维护一个 Conversation：LLM 友好历史 + 当前活跃的复习 thread + 当前题目卡片。
+每个 session 维护一个 SessionContext（agent/context.py）：LLM 友好历史 + 当前活跃的
+复习 thread + 当前题目卡片。历史长度由 SessionContext **按 token 预算**自己管
+（V1.6 之前是按条数切 [-8:]），所以这里不再做任何切片。
 """
 
 import json
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from agent.context import HISTORY_MAX, SessionContext
+from agent.context import SessionContext
 from agent.tools import build_tools
 from core.llm import run_agent
 from nlu.intent import extract_import_content, fast_path_intent
-
-# 喂给 LLM 的最近历史条数上限
-_HISTORY_MAX = HISTORY_MAX
 
 
 class Supervisor:
@@ -55,9 +54,10 @@ class Supervisor:
             return self._fast_path(conv, fast, message)
 
         # 2) 常规路径：LLM 工具调用循环
-        conv.remember("user", message)   # 超长历史会被自动压缩成前情提要，不无限膨胀
+        #    历史里只放「之前的」对话（已按 token 预算限幅，不再切 [-8:]）；
+        #    当前这条单独作为完整原文追加——不截断、且不在历史里重复出现一次。
         messages = [SystemMessage(content=self._system_prompt(conv))]
-        messages += self._to_history(conv.messages[-_HISTORY_MAX:])
+        messages += self._to_history(conv.messages)
         messages.append(HumanMessage(content=message))
 
         final_text, tool_log = run_agent(
@@ -68,7 +68,9 @@ class Supervisor:
         # 3) 由 tool_log 最后一张结构化卡片决定返回 type
         result = self._map_result(final_text, tool_log)
 
-        # 4) 记录一条 assistant 自然语言回复（不落整张卡片，避免历史被撑爆）
+        # 4) 记入历史：用户原话 + 助手自然语言回复（不落整张卡片，避免历史被撑爆）。
+        #    放在 LLM 调用之后——否则当前消息会既进历史、又作为新消息各发一次。
+        conv.remember("user", message)
         conv.remember("assistant", self._assistant_text(result))
         return result
 

@@ -14,6 +14,7 @@ pymysql
 sqlalchemy>=2.0
 requests
 python-dotenv
+tiktoken
 
 # RAG 混合检索（向量部分）
 sentence-transformers

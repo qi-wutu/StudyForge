@@ -1,11 +1,13 @@
-"""V1.3 — 工具层 + 工具循环的单元测试（全部 mock 底层子 Agent / LLM，不真调 API）
+"""V1.3 / V1.6 — 工具层 + 工具循环 + 上下文压缩的单元测试（全部 mock，不真调 API）
 
-覆盖三块：
+覆盖五块：
   1. build_tools() 把 6 个 Agent 工具正确串到 review/qa/analyze/import，
      返回 JSON 卡片、并按闭包读写 conv 里的复习线程状态。
   2. core.llm.run_agent() 的工具调用循环：无工具路径 / 单工具路径 /
      超轮数强制回答 / 工具抛错不崩。
   3. Supervisor 的确定性安全快路（退出/导入前缀）不经过 LLM。
+  4. SessionContext 的 token 预算压缩（V1.6）：触发、不变量、LLM 摘要 + 兜底、滚动合并。
+  5. Supervisor 的历史拼装：当前消息不重复、历史不按条数切。
 """
 
 import json
@@ -343,29 +345,133 @@ def test_supervisor_import_fast_path_short_skips_llm(monkeypatch):
 
 
 # ========================================
-# 四、SessionContext — 简单压缩
+# 四、SessionContext — token 预算压缩（V1.6）
 # ========================================
 
-def test_compress_folds_old_into_summary():
+class FakeSummaryLLM:
+    """假 LLM：记录每次摘要调用的 prompt，返回可预测的摘要。"""
+
+    def __init__(self, reply="用户正在复习 Go 并发"):
+        self.reply = reply
+        self.prompts = []
+
+    def invoke(self, prompt):
+        self.prompts.append(prompt if isinstance(prompt, str)
+                            else "\n".join(m.content for m in prompt))
+        return AIMessage(content=self.reply)
+
+
+def _fill(ctx, n, start=0,
+          text="第{i}条消息，这是一段用来把对话历史撑到 token 预算之上的中文内容，"
+               "长度接近用户真实作答时写下来的一段话。"):
+    """灌 n 条中文消息（每条约 40 tokens → 400 条 ≈ 16000 tokens，稳超 8000 预算）。"""
+    for i in range(start, start + n):
+        ctx.remember("user", text.format(i=i))
+
+
+def test_count_tokens_basic():
+    from agent.context import _count_tokens
+
+    assert _count_tokens("") == 0
+    assert _count_tokens("这是一段中文" * 10) >= 40     # 60 个汉字 ≈ 60 tokens
+    assert _count_tokens("hello world") < 5            # 英文 ≈ 4 字符/token
+
+
+def test_single_message_truncated_to_max():
+    from agent.context import MAX_MSG_TOKENS, _count_tokens
+
     ctx = make_conv()
-    for i in range(20):
-        ctx.remember("user", f"消息{i}")
+    ctx.remember("user", "很长的一段话" * 5000)          # 约 3 万字，远超单条上限
 
-    ctx.compress(keep_recent=4)
-
-    assert len(ctx.messages) == 4
-    assert ctx.messages[-1]["text"] == "消息19"
-    assert "前情提要" in ctx.summary
-    assert "消息11" in ctx.summary           # 被折叠对话里最近的几条要点留在摘要里
+    assert _count_tokens(ctx.messages[0]["text"]) <= MAX_MSG_TOKENS
 
 
-def test_remember_auto_compress_over_threshold():
+def test_compress_triggered_by_token_budget():
+    from agent.context import HISTORY_TOKEN_BUDGET
+
     ctx = make_conv()
-    for i in range(60):                       # 超过 _MAX_STORED=40 → 自动压缩
-        ctx.remember("user", f"x{i}")
+    _fill(ctx, 400)
 
-    assert len(ctx.messages) <= 40            # 原始历史被限幅
-    assert ctx.summary                        # 早期对话折叠进了前情提要
+    assert ctx.summary                                   # 超预算 → 自动压缩
+    assert ctx._history_tokens() <= HISTORY_TOKEN_BUDGET  # 压后回到预算内
+    assert ctx.messages[-1]["text"].startswith("第399条")  # 最新的原文保留
+
+
+def test_compress_invariant_no_immediate_retrigger():
+    """不变量：压完必须低于触发线，否则会「压完立刻再压」把摘要反复覆盖。"""
+    from agent.context import (
+        HISTORY_TOKEN_BUDGET, KEEP_RECENT_TOKENS, SUMMARY_TOKEN_BUDGET,
+        MAX_MSG_TOKENS,
+    )
+
+    assert KEEP_RECENT_TOKENS + SUMMARY_TOKEN_BUDGET < HISTORY_TOKEN_BUDGET
+    assert MAX_MSG_TOKENS <= KEEP_RECENT_TOKENS           # 保证至少能留最后一条
+
+    ctx = make_conv()
+    _fill(ctx, 400)
+
+    ctx.compress()                                        # 显式压一次，看压完的瞬间
+    kept = ctx._history_tokens()
+    assert kept <= KEEP_RECENT_TOKENS                     # 保留段在预算内
+    assert kept <= HISTORY_TOKEN_BUDGET                   # → 不会再触发压缩
+    assert len(ctx.messages) >= 1                         # 至少留一条原文
+
+
+def test_llm_summary_used_when_available(monkeypatch):
+    import core.llm
+    from agent.context import _count_tokens
+
+    fake = FakeSummaryLLM("用户在学 Go 并发，薄弱在 slice 扩容")
+    monkeypatch.setattr(core.llm, "get_llm", lambda: fake)
+
+    ctx = make_conv()
+    _fill(ctx, 400)
+
+    assert "slice 扩容" in ctx.summary                     # 用的是 LLM 摘要
+    assert _count_tokens(ctx.summary) > 0
+
+
+def test_llm_summary_failure_falls_back(monkeypatch):
+    """压缩跑在聊天主流程里：LLM 摘要挂掉绝不能把请求带崩。"""
+    import core.llm
+
+    def boom():
+        raise RuntimeError("API 挂了")
+
+    monkeypatch.setattr(core.llm, "get_llm", boom)
+
+    ctx = make_conv()
+    _fill(ctx, 400)
+
+    assert ctx.summary                                    # 兜底仍然产出了摘要
+    assert "第" in ctx.summary                             # 确定性折叠：来自用户原话
+
+
+def test_second_compress_merges_previous_summary(monkeypatch):
+    """滚动摘要：第二次压缩要把第一版摘要一起交给 LLM，不能覆盖丢掉。"""
+    import core.llm
+
+    fake = FakeSummaryLLM()
+    monkeypatch.setattr(core.llm, "get_llm", lambda: fake)
+
+    ctx = make_conv()
+    _fill(ctx, 400)
+    first = ctx.summary
+    assert first
+
+    _fill(ctx, 400, start=400)                            # 再灌一批 → 触发第二次压缩
+
+    assert len(fake.prompts) >= 2
+    assert first in fake.prompts[1]                       # 旧摘要进了第二次的 prompt
+
+
+def test_summary_note_wraps_summary():
+    ctx = make_conv()
+    assert ctx.summary_note == ""                         # 无摘要时不往提示里塞东西
+
+    _fill(ctx, 400)
+    assert ctx.summary_note.startswith("（前情提要：")
+    assert ctx.summary in ctx.summary_note
 
 
 def test_clear_review_is_idempotent():
@@ -376,3 +482,45 @@ def test_clear_review_is_idempotent():
     assert ctx.current_card is None
     ctx.clear_review()                        # 幂等，再清一次也 OK
     assert ctx.review_thread_id is None
+
+
+# ========================================
+# 五、Supervisor — 历史拼装
+# ========================================
+
+def test_current_message_sent_exactly_once(monkeypatch):
+    """当前用户消息不能既在历史尾部、又作为新消息各发一次（V1.6 修）。"""
+    import agent.supervisor as sup_mod
+
+    captured = {}
+
+    def fake_run_agent(messages, tools, max_turns=6):
+        captured["messages"] = messages
+        return "好的", []
+
+    monkeypatch.setattr(sup_mod, "run_agent", fake_run_agent)
+
+    sup_mod.Supervisor().chat(70001, "你好呀")
+
+    humans = [m.content for m in captured["messages"] if isinstance(m, HumanMessage)]
+    assert humans.count("你好呀") == 1
+
+
+def test_history_not_sliced_by_count(monkeypatch):
+    """V1.6：历史按 token 预算管，不再切 [-8:]，较早的对话也要喂给模型。"""
+    import agent.supervisor as sup_mod
+
+    captured = {}
+
+    def fake_run_agent(messages, tools, max_turns=6):
+        captured["messages"] = messages
+        return "好的", []
+
+    monkeypatch.setattr(sup_mod, "run_agent", fake_run_agent)
+
+    sup = sup_mod.Supervisor()
+    for i in range(12):                       # 12 轮 > 旧的 _HISTORY_MAX=8
+        sup.chat(70002, f"第{i}句")
+
+    texts = [m.content for m in captured["messages"]]
+    assert any("第0句" in t for t in texts)    # 最早那句仍在（没被条数切掉）
